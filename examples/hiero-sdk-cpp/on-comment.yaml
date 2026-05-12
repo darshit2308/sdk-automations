@@ -1,0 +1,41 @@
+name: Bot - On Comment
+
+on:
+  issue_comment:
+    types:
+      - created
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  on-comment:
+    if: github.event.issue.pull_request == null
+    runs-on: hiero-client-sdk-linux-large
+
+    concurrency:
+      group: on-comment-${{ github.event.issue.number }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450
+        with:
+          egress-policy: audit
+
+      - name: Checkout automation config
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: |
+            .github/hiero-automation.json
+          sparse-checkout-cone-mode: false
+
+      # Future interface example. Assignment is intentionally not implemented in the first pilot.
+      - name: Run shared automation
+        uses: hiero-hackers/sdk-automations/actions/run-automation@v0.1.0
+        with:
+          automation: assign
+          config-path: .github/hiero-automation.json
+          github-token: ${{ github.token }}

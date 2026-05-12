@@ -1,0 +1,67 @@
+name: Bot - On PR Close
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  pull-requests: write
+  issues: write
+  contents: read
+
+jobs:
+  on-pr-close:
+    runs-on: hiero-client-sdk-linux-large
+    if: github.event.pull_request.merged == true
+
+    concurrency:
+      group: on-pr-close-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450
+        with:
+          egress-policy: audit
+
+      - name: Checkout automation config
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: |
+            .github/hiero-automation.json
+          sparse-checkout-cone-mode: false
+
+      # Future interface example. PR-close recommendation is intentionally not implemented in the first pilot.
+      - name: Run shared close automation
+        uses: hiero-hackers/sdk-automations/actions/run-automation@v0.1.0
+        with:
+          automation: pr-close-recommendation
+          config-path: .github/hiero-automation.json
+          github-token: ${{ github.token }}
+
+  on-pr-merged-conflict-check:
+    runs-on: hiero-client-sdk-linux-large
+    if: github.event.pull_request.merged == true
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450
+        with:
+          egress-policy: audit
+
+      - name: Checkout automation config
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: |
+            .github/hiero-automation.json
+          sparse-checkout-cone-mode: false
+
+      # Future interface example. Sibling conflict checks are intentionally not implemented in the first pilot.
+      - name: Run shared sibling conflict check
+        uses: hiero-hackers/sdk-automations/actions/run-automation@v0.1.0
+        with:
+          automation: sibling-conflict-check
+          config-path: .github/hiero-automation.json
+          github-token: ${{ github.token }}

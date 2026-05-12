@@ -1,0 +1,28 @@
+repository:
+  owner: hiero-ledger
+  name: hiero-sdk-python
+
+labels:
+  reviewQueue:
+    juniorCommitter: "queue:junior-committer"
+    committers: "queue:committers"
+    maintainers: "queue:maintainers"
+    readyToMerge: "status: ready-to-merge"
+    communityReview: "open to community review"
+
+reviewSync:
+  enabled: true
+  rateLimitFloor: 200
+  includeDraftPullRequests: false
+  dryRunDefault: false
+
+assignment:
+  enabled: true
+  maxOpenAssignments: 2
+  maxGoodFirstIssueCompletions: 5
+
+skillHierarchy:
+  - "Good First Issue"
+  - "skill: beginner"
+  - "skill: intermediate"
+  - "skill: advanced"

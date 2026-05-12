@@ -1,0 +1,46 @@
+name: Review Queue Label Sync
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'If true, log label changes without applying them. Default true for manual runs.'
+        required: false
+        default: 'true'
+        type: string
+
+permissions:
+  pull-requests: write
+  issues: write
+  contents: read
+  checks: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: hl-sdk-py-lin-md
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450
+        with:
+          egress-policy: audit
+
+      - name: Checkout automation config
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          sparse-checkout: |
+            .github/hiero-automation.yml
+          sparse-checkout-cone-mode: false
+
+      - name: Run shared review sync
+        uses: hiero-hackers/sdk-automations/actions/review-sync@v0.1.0
+        with:
+          config-path: .github/hiero-automation.yml
+          github-token: ${{ github.token }}
+          dry-run: ${{ inputs.dry_run || 'false' }}

@@ -1,0 +1,16 @@
+name: Run Hiero SDK Review Sync
+description: Sync review queue labels for open pull requests.
+inputs:
+  config-path:
+    description: Path to the caller repository automation config.
+    required: false
+    default: .github/hiero-automation.yml
+  github-token:
+    description: GitHub token used for API calls.
+    required: true
+  dry-run:
+    description: Log intended changes without mutating GitHub state.
+    required: false
+runs:
+  using: node20
+  main: dist/index.js

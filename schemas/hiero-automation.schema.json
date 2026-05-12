@@ -1,0 +1,60 @@
+
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hiero-hackers.github.io/sdk-automations/schemas/hiero-automation.schema.json",
+  "title": "Hiero SDK Automation Config",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "repository": {
+      "type": "object",
+      "required": ["owner", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "owner": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 }
+      }
+    },
+    "labels": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "reviewQueue": {
+          "type": "object",
+          "required": ["juniorCommitter", "committers", "maintainers", "readyToMerge", "communityReview"],
+          "additionalProperties": false,
+          "properties": {
+            "juniorCommitter": { "type": "string", "minLength": 1 },
+            "committers": { "type": "string", "minLength": 1 },
+            "maintainers": { "type": "string", "minLength": 1 },
+            "readyToMerge": { "type": "string", "minLength": 1 },
+            "communityReview": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "reviewSync": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "rateLimitFloor": { "type": "integer", "minimum": 0 },
+        "includeDraftPullRequests": { "type": "boolean" },
+        "dryRunDefault": { "type": "boolean" }
+      }
+    },
+    "assignment": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "maxOpenAssignments": { "type": "integer", "minimum": 0 },
+        "maxGoodFirstIssueCompletions": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "skillHierarchy": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "repository": {
+    "owner": "hiero-ledger",
+    "name": "hiero-sdk-cpp"
+  },
+  "labels": {
+    "reviewQueue": {
+      "juniorCommitter": "queue:junior-committer",
+      "committers": "queue:committers",
+      "maintainers": "queue:maintainers",
+      "readyToMerge": "status: ready-to-merge",
+      "communityReview": "open to community review"
+    },
+    "status": {
+      "awaitingTriage": "status: awaiting triage",
+      "readyForDev": "status: ready for dev",
+      "inProgress": "status: in progress",
+      "blocked": "status: blocked",
+      "needsReview": "status: needs review",
+      "needsRevision": "status: needs revision"
+    },
+    "skill": {
+      "goodFirstIssue": "skill: good first issue",
+      "beginner": "skill: beginner",
+      "intermediate": "skill: intermediate",
+      "advanced": "skill: advanced"
+    }
+  },
+  "reviewSync": {
+    "enabled": false,
+    "rateLimitFloor": 200,
+    "includeDraftPullRequests": false,
+    "dryRunDefault": false
+  },
+  "assignment": {
+    "enabled": true,
+    "maxOpenAssignments": 2,
+    "maxGoodFirstIssueCompletions": 5
+  },
+  "skillHierarchy": [
+    "skill: good first issue",
+    "skill: beginner",
+    "skill: intermediate",
+    "skill: advanced"
+  ]
+}
