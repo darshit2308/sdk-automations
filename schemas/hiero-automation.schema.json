@@ -1,4 +1,3 @@
-
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hiero-hackers.github.io/sdk-automations/schemas/hiero-automation.schema.json",
@@ -24,7 +23,13 @@
       "properties": {
         "reviewQueue": {
           "type": "object",
-          "required": ["juniorCommitter", "committers", "maintainers", "readyToMerge", "communityReview"],
+          "required": [
+            "juniorCommitter",
+            "committers",
+            "maintainers",
+            "readyToMerge",
+            "communityReview"
+          ],
           "additionalProperties": false,
           "properties": {
             "juniorCommitter": { "type": "string", "minLength": 1 },
