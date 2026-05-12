@@ -43,4 +43,4 @@ jobs:
         with:
           config-path: .github/hiero-automation.yml
           github-token: ${{ github.token }}
-          dry-run: ${{ inputs.dry_run || 'false' }}
+          dry-run: ${{ inputs.dry_run || 'true' }}

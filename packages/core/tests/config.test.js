@@ -67,3 +67,57 @@ test('invalid review-sync config fails validation', () => {
     /repository.name/
   );
 });
+
+test('strict validation rejects unknown top-level config keys', () => {
+  assert.throws(
+    () => validateConfig({
+      repository: { owner: 'hiero-ledger', name: 'hiero-sdk-python' },
+      labels: {
+        reviewQueue: {
+          juniorCommitter: 'queue:junior-committer',
+          committers: 'queue:committers',
+          maintainers: 'queue:maintainers',
+          readyToMerge: 'status: ready-to-merge',
+          communityReview: 'open to community review',
+        },
+      },
+      typoedSection: true,
+    }, 'review-sync'),
+    /config.typoedSection is not supported/
+  );
+});
+
+test('strict validation rejects unknown nested review-sync keys', () => {
+  assert.throws(
+    () => validateConfig({
+      repository: { owner: 'hiero-ledger', name: 'hiero-sdk-python' },
+      labels: {
+        reviewQueue: {
+          juniorCommitter: 'queue:junior-committer',
+          committers: 'queue:committers',
+          maintainers: 'queue:maintainers',
+          readyToMerge: 'status: ready-to-merge',
+          communityReview: 'open to community review',
+        },
+      },
+      reviewSync: {
+        enabled: true,
+        dryRnuDefault: true,
+      },
+    }, 'review-sync'),
+    /reviewSync.dryRnuDefault is not supported/
+  );
+});
+
+test('checked-in Python dry-run pilot config validates', () => {
+  const config = loadConfig(path.join(__dirname, '../../../examples/hiero-sdk-python/hiero-automation.yml'));
+  validateConfig(config, 'review-sync');
+  assert.equal(config.reviewSync.dryRunDefault, true);
+});
+
+test('checked-in C++ future policy example validates without enabling a contributor bot', () => {
+  const config = loadConfig(path.join(__dirname, '../../../examples/hiero-sdk-cpp/hiero-automation.json'));
+  validateConfig(config, 'review-sync');
+  assert.equal(config.reviewSync.enabled, false);
+  assert.equal(config.assignment.enabled, true);
+});

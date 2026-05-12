@@ -4,8 +4,10 @@
   "$id": "https://hiero-hackers.github.io/sdk-automations/schemas/hiero-automation.schema.json",
   "title": "Hiero SDK Automation Config",
   "type": "object",
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
+    "maintainerTeam": { "type": "string", "minLength": 1 },
+    "goodFirstIssueSupportTeam": { "type": "string", "minLength": 1 },
     "repository": {
       "type": "object",
       "required": ["owner", "name"],
@@ -17,7 +19,8 @@
     },
     "labels": {
       "type": "object",
-      "additionalProperties": true,
+      "required": ["reviewQueue"],
+      "additionalProperties": false,
       "properties": {
         "reviewQueue": {
           "type": "object",
@@ -30,6 +33,18 @@
             "readyToMerge": { "type": "string", "minLength": 1 },
             "communityReview": { "type": "string", "minLength": 1 }
           }
+        },
+        "status": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        },
+        "skill": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        },
+        "priority": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "minLength": 1 }
         }
       }
     },
@@ -45,16 +60,51 @@
     },
     "assignment": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "properties": {
         "enabled": { "type": "boolean" },
         "maxOpenAssignments": { "type": "integer", "minimum": 0 },
         "maxGoodFirstIssueCompletions": { "type": "integer", "minimum": 0 }
       }
     },
+    "assignmentLimits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxOpenAssignments": { "type": "integer", "minimum": 0 },
+        "maxGfiCompletions": { "type": "integer", "minimum": 0 }
+      }
+    },
     "skillHierarchy": {
       "type": "array",
       "items": { "type": "string" }
+    },
+    "priorityHierarchy": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "skillPrerequisites": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["requiredLabel", "requiredCount", "displayName"],
+        "additionalProperties": false,
+        "properties": {
+          "requiredLabel": { "type": ["string", "null"] },
+          "requiredCount": { "type": "integer", "minimum": 0 },
+          "displayName": { "type": "string", "minLength": 1 },
+          "prerequisiteDisplayName": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "documentation": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "community": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "minLength": 1 }
     }
-  }
+  },
+  "required": ["repository", "labels"]
 }

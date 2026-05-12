@@ -10,6 +10,7 @@ This repository is intentionally **actions-first, Probot-later**:
 - A future Probot/GitHub App can reuse the same core modules once the behavior is proven.
 
 The first pilot automation is `review-sync`, based on the modular Python SDK review queue label sync.
+The first rollout should run Python review-sync in dry-run mode before any C++ contributor-facing bot is migrated.
 
 ## Layout
 
@@ -32,7 +33,7 @@ actions/review-sync/          Review-sync-specific JavaScript action entrypoint
   with:
     config-path: .github/hiero-automation.yml
     github-token: ${{ github.token }}
-    dry-run: ${{ inputs.dry_run || 'false' }}
+    dry-run: ${{ inputs.dry_run || 'true' }}
 ```
 
 See [docs/caller-interface.md](docs/caller-interface.md) for the supported inputs and versioning guidance.

@@ -37,13 +37,15 @@ Caller workflows should include checkout when the action needs a local config fi
 
 ## Python Example
 
+The recommended first pilot is dry-run review sync for Python. Scheduled runs stay dry-run until maintainers deliberately flip the workflow input/config.
+
 ```yaml
 - name: Run shared review sync
   uses: hiero-hackers/sdk-automations/actions/review-sync@v0.1.0
   with:
     config-path: .github/hiero-automation.yml
     github-token: ${{ github.token }}
-    dry-run: ${{ inputs.dry_run || 'false' }}
+    dry-run: ${{ inputs.dry_run || 'true' }}
 ```
 
 ## C++ Example
@@ -58,6 +60,8 @@ Caller workflows should include checkout when the action needs a local config fi
 ```
 
 `assign` is shown as the intended future caller shape, not as an implemented automation in this first pilot.
+
+C++ contributor-facing bots should not be migrated until after the Python review-sync pilot and the shared assignment core design.
 
 ## Versioning
 

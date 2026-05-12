@@ -14,7 +14,7 @@ reviewSync:
   enabled: true
   rateLimitFloor: 200
   includeDraftPullRequests: false
-  dryRunDefault: false
+  dryRunDefault: true
 
 assignment:
   enabled: true
