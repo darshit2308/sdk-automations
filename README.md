@@ -1,1064 +1,997 @@
-# Phased Migration Plan for Shared SDK Automations
+<div align="center">
 
-Last updated: 2026-05-13
+<br/>
 
-Status: strategy draft for maintainer review
+```
+██╗  ██╗██╗███████╗██████╗  ██████╗
+██║  ██║██║██╔════╝██╔══██╗██╔═══██╗
+███████║██║█████╗  ██████╔╝██║   ██║
+██╔══██║██║██╔══╝  ██╔══██╗██║   ██║
+██║  ██║██║███████╗██║  ██║╚██████╔╝
+╚═╝  ╚═╝╚═╝╚══════╝╚═╝  ╚═╝ ╚═════╝
 
-Related work:
-
-- LFDT mentorship project: https://github.com/LF-Decentralized-Trust-Mentorships/mentorship-program/issues/73
-- C++ investigation issue: https://github.com/hiero-ledger/hiero-sdk-cpp/issues/1627
-- Central automation candidate repo: https://github.com/darshit2308/sdk-automations
-- Python canary fork: https://github.com/darshit2308/hiero-sdk-python
-- Central repo CI proof: https://github.com/darshit2308/sdk-automations/actions/runs/25763437710
-- Python fork canary proof: https://github.com/darshit2308/hiero-sdk-python/actions/runs/25763950499/job/75671903429
-
-## Executive Summary
-
-The migration strategy is deliberately phased. The goal is not to move every SDK workflow into one central wrapper at once. The goal is to centralize reusable automation logic while preserving the parts of each SDK workflow that are security-sensitive, repository-specific, and easier for maintainers to audit locally.
-
-The recommended direction is:
-
-1. Prove the shared action model with Python `review-sync` first.
-2. Keep SDK workflow YAML local for triggers, permissions, checkout, concurrency, artifacts, and harden-runner.
-3. Move reusable logic into `sdk-automations` as tested core modules and thin GitHub Action adapters.
-4. Use dry-run and fork canaries before enabling writes upstream.
-5. Revisit C++ only after the shared interface is stable, because C++ workflows are contributor-facing and have already gone through recent structural refactoring.
-6. Add Probot or a GitHub App later as an adapter over the same shared core, not as the first migration dependency.
-
-The core principle is:
-
-> Centralize reusable automation logic gradually, while keeping SDK workflow ownership, permissions, checkout, harden-runner, and repo policy local until each automation is proven.
-
-This plan intentionally avoids a big-bang migration. It gives maintainers clear review points, rollback paths, and evidence at every phase.
-
-## Why This Is Not A Big-Bang Migration
-
-A broad migration would look impressive on paper, but it would be risky in practice. The current ecosystem has different workflow shapes, different repository maturity levels, and different amounts of local automation logic.
-
-A phased migration is safer because it lets maintainers answer one question at a time:
-
-- Can an SDK repo call a central action without losing local workflow control?
-- Can the action load repo-local config correctly?
-- Can it run safely in dry-run mode?
-- Can it mutate only a fork or controlled pilot before production?
-- Can the central core be tested independently of GitHub Actions globals?
-- Can rollback stay simple?
-- Can C++ be evaluated without disrupting its existing contributor-facing bot behavior?
-
-The first proof should be small and real, not large and speculative. Python `review-sync` is the best first candidate because it is bounded, already related to review queue automation, and lower risk than assignment logic.
-
-## Current Evidence
-
-### Central repo proof
-
-The candidate central repository is:
-
-https://github.com/darshit2308/sdk-automations
-
-Current structure includes:
-
-- `packages/core`: shared automation logic.
-- `packages/github-action-adapter`: GitHub Actions input/client boundary.
-- `actions/review-sync`: callable review-sync JavaScript action.
-- `actions/run-automation`: generic dispatcher action.
-- `schemas/hiero-automation.schema.json`: repo config schema.
-- `examples/`: caller examples for SDK repositories.
-- `docs/`: architecture, caller interface, StepSecurity notes, and migration docs.
-
-The central repo has CI that runs tests, builds action bundles, and verifies that committed `actions/*/dist/index.js` bundles are current:
-
-https://github.com/darshit2308/sdk-automations/actions/runs/25763437710
-
-The large `dist/index.js` files are generated GitHub Action bundles, not hand-written source. They are committed so SDK caller repositories can use the action without installing this repo's workspace dependencies.
-
-### Python canary proof
-
-The Python fork canary is:
-
-https://github.com/darshit2308/hiero-sdk-python
-
-The canary adds only:
-
-- `.github/hiero-automation.yml`
-- `.github/workflows/central-review-sync-canary.yml`
-
-The canary proves that an SDK repository can keep workflow ownership local while calling reusable logic from the central repo.
-
-The workflow keeps these pieces in the Python SDK fork:
-
-- `workflow_dispatch` trigger
-- `permissions`
-- `step-security/harden-runner`
-- checkout
-- config file path
-- token choice
-- dry-run/write mode choice
-
-A successful fork run proved the central action can execute end-to-end and apply the expected review labels in the fork:
-
-https://github.com/darshit2308/hiero-sdk-python/actions/runs/25763950499/job/75671903429
-
-The current canary workflow is set back to `dry-run: true` for the safer steady state. This separates two useful proofs:
-
-- Fork mutation proof: the central action can write labels in a controlled fork.
-- Safe canary state: the branch can remain reviewable without mutating upstream production state.
-
-### C++ investigation status
-
-The C++ issue is intentionally scoped as an investigation, not a production workflow refactor:
-
-https://github.com/hiero-ledger/hiero-sdk-cpp/issues/1627
-
-The issue asks for:
-
-- target automation prototype identification
-- caller interface definition
-- StepSecurity impact analysis
-- simple C++ workflow before/after
-- awkward C++ workflow before/after
-- final recommendation
-- no production workflow behavior changes as part of the investigation
-
-This plan aligns with that scope by recommending central action/core extraction first and C++ workflow changes later.
-
-## Repository Landscape
-
-The Hiero SDK ecosystem does not have one uniform automation shape. Some SDKs mostly have build/release workflows. Python and C++ have much larger local automation surfaces.
-
-The following matrix was sampled from public GitHub repository trees on 2026-05-13.
-
-| Repository | Primary language | Workflow files | Local `.github/scripts` files | Local `.github/actions` files | Migration implication |
-| --- | --- | ---: | ---: | ---: | --- |
-| `hiero-sdk-python` | Python | 47 | 66 | 0 | Best first pilot. Large automation surface, but review-sync is bounded. |
-| `hiero-sdk-cpp` | C++ | 12 | 46 | 0 | High-value but sensitive. Needs investigation and behavior mapping before migration. |
-| `hiero-sdk-js` | JavaScript | 14 | 0 | 0 | Later candidate after shared model is stable. |
-| `hiero-sdk-java` | Java | 7 | 0 | 0 | Later candidate, likely workflow-level adoption only at first. |
-| `hiero-sdk-tck` | TypeScript | 8 | 0 | 0 | Later candidate, compatibility workflow focus. |
-| `hiero-sdk-rust` | Rust | 3 | 0 | 0 | Later candidate, lower automation surface. |
-| `hiero-sdk-go` | Go | 1 | 0 | 0 | Later candidate, likely only if shared policy becomes relevant. |
-| `hiero-sdk-swift` | Swift | 1 | 0 | 0 | Later candidate, low automation surface. |
-| `hiero-did-sdk-python` | Python | 4 | 0 | 2 | Later candidate, already has local actions pattern. |
-| `hiero-did-sdk-js` | TypeScript | 4 | 0 | 2 | Later candidate, already has local actions pattern. |
-
-This matrix supports the rollout order:
-
-1. Python first because it has the largest automation surface and a bounded review-sync candidate.
-2. C++ second because it has high-value contributor bot logic but higher risk.
-3. Other SDKs later because they do not yet show the same local bot-script duplication pattern.
-
-## Architecture Strategy
-
-The target architecture is actions-first and Probot-later.
-
-```mermaid
-flowchart LR
-    subgraph SDK["SDK repository"]
-        W["Workflow YAML"]
-        H["Visible harden-runner step"]
-        C["Checkout and repo config"]
-        P["Local permissions and triggers"]
-    end
-
-    subgraph Central["sdk-automations"]
-        A["GitHub Action adapter"]
-        Core["Shared core logic"]
-        Schema["Config schema and tests"]
-    end
-
-    W --> H
-    H --> C
-    C --> A
-    P --> W
-    A --> Core
-    Schema --> Core
+██╗    ██╗ ██████╗ ██████╗ ██╗  ██╗███████╗██╗      ██████╗ ██╗    ██╗
+██║    ██║██╔═══██╗██╔══██╗██║ ██╔╝██╔════╝██║     ██╔═══██╗██║    ██║
+██║ █╗ ██║██║   ██║██████╔╝█████╔╝ █████╗  ██║     ██║   ██║██║ █╗ ██║
+██║███╗██║██║   ██║██╔══██╗██╔═██╗ ██╔══╝  ██║     ██║   ██║██║███╗██║
+╚███╔███╔╝╚██████╔╝██║  ██║██║  ██╗██║     ███████╗╚██████╔╝╚███╔███╔╝
+ ╚══╝╚══╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚══════╝ ╚═════╝  ╚══╝╚══╝
 ```
 
-### What remains local in SDK repositories
+### **Centralized GitHub Workflow Orchestration for the Hiero Ecosystem**
+#### *LF Decentralized Trust Mentorship Program — Issue #73*
 
-SDK repositories keep:
+<br/>
 
-- workflow triggers
-- `permissions`
-- concurrency groups
-- `if:` guards
-- runner selection
-- checkout strategy
-- artifact upload/download wiring
-- `step-security/harden-runner`
-- repository secrets and tokens
-- repository-owned config files
-- multi-job orchestration
+[![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org)
+[![Probot](https://img.shields.io/badge/Probot-GitHub%20App-0075ca?style=for-the-badge&logo=github&logoColor=white)](https://probot.github.io)
+[![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-Hybrid%20CI-2088FF?style=for-the-badge&logo=github-actions&logoColor=white)](https://github.com/features/actions)
+[![License](https://img.shields.io/badge/License-Apache%202.0-D22128?style=for-the-badge&logo=apache&logoColor=white)](LICENSE)
+[![LFDT](https://img.shields.io/badge/LF%20Decentralized%20Trust-Mentorship%202026-003087?style=for-the-badge&logo=linux-foundation&logoColor=white)](https://mentorship.lfx.linuxfoundation.org)
 
-These are local because they define the security boundary and event context for each repository.
+[![Coverage Target](https://img.shields.io/badge/Coverage%20Target-90%25%2B-brightgreen?style=flat-square)](https://github.com/darshit2308/sdk-automations)
+[![Security](https://img.shields.io/badge/Security-HMAC--SHA256%20Verified-orange?style=flat-square)](https://github.com/darshit2308/sdk-automations)
+[![Webhooks](https://img.shields.io/badge/Webhooks-Fail--Closed-red?style=flat-square)](https://github.com/darshit2308/sdk-automations)
+[![Architecture](https://img.shields.io/badge/Architecture-Hybrid%20App%20%2B%20Actions-blueviolet?style=flat-square)](https://github.com/darshit2308/sdk-automations)
+[![PRs Welcome](https://img.shields.io/badge/PRs-Welcome-0075ca?style=flat-square)](https://github.com/darshit2308/sdk-automations/pulls)
 
-### What moves into `sdk-automations`
+<br/>
 
-The central repo owns:
+> **One PR to rule them all.** — Replace 12+ per-repository workflow PRs with a single,  
+> centralized, cryptographically verified, audit-logged GitHub App.
 
-- shared automation core logic
-- config schema and validation
-- GitHub API adapter boundaries
-- reusable comment/label/review decision logic
-- tests and fixtures
-- action bundles
-- examples and rollout docs
-- future Probot/GitHub App adapter code
+<br/>
 
-The central repo should not own every caller workflow. It should own behavior that is actually duplicated and expensive to maintain across repositories.
+</div>
 
-### Why Probot comes later
+---
 
-A GitHub App or Probot service is useful for long-term orchestration, but it adds hosting, secrets, incident response, and operational ownership. Starting with JavaScript Actions is lower risk because SDK repos can adopt one workflow step at a time.
+## 📋 Table of Contents
 
-The long-term design still supports Probot:
+- [The Problem](#-the-problem)
+- [The Solution — V2 Architecture](#-the-solution--v2-hybrid-architecture)
+- [System Architecture](#-system-architecture)
+  - [Current State: Fragmented Per-Repo](#current-state-fragmented-per-repo)
+  - [Target State: Hybrid App Architecture](#target-state-hybrid-github-app-architecture)
+  - [PR Validation Execution Flow](#pr-check-validation-pipeline)
+  - [Event Routing Flow](#event-routing--decision-flow)
+- [Core Features](#-core-features)
+- [Security Model](#-security-model)
+- [Configuration Reference](#-configuration-reference)
+- [Project Structure](#-project-structure)
+- [Implementation Milestones](#-implementation-milestones--roadmap)
+- [Testing Strategy](#-testing-strategy)
+- [Pre-Mentorship Contributions](#-pre-mentorship-contributions--proof-of-execution)
+- [Getting Started](#-getting-started)
+- [Local Development](#-local-development)
+- [API & Dispatcher Reference](#-api--dispatcher-reference)
+- [Audit & Observability](#-audit--observability)
+- [Extensibility Guide](#-extensibility--plugin-architecture)
+- [Rollout Strategy](#-rollout-strategy)
+- [Learning Objectives](#-learning-objectives)
+- [Author & Acknowledgements](#-author--acknowledgements)
+
+---
+
+## 🔥 The Problem
+
+Hiero currently relies on a **decentralized pattern** of GitHub Actions and standalone JavaScript files to manage contributor workflows. This approach works for individual repositories — but breaks down catastrophically as the ecosystem scales.
+
+```
+Today: You fix one parsing bug.
+Result: You open 12+ near-identical PRs across every SDK repository.
+```
+
+| Pain Point | Impact |
+|---|---|
+| Logic duplicated per-repository | High maintenance overhead |
+| `pull_request_target` injection risk | Elevated CI security exposure |
+| No unified audit trail | Opaque automation decisions |
+| Feature toggles non-existent | Cannot adapt policy per-repo |
+| Horizontal scaling | Linearly increasing coordination cost |
+
+**The root issue isn't the automation. It's the architecture.**
+
+---
+
+## ✅ The Solution — V2 Hybrid Architecture
+
+> **One centralized Probot GitHub App** for orchestration and policy enforcement, paired with **GitHub Actions** for isolated heavy execution.
+
+```
+Updating a core bot rule:
+  Before → 12+ PRs across all repositories
+  After  → 1 PR in the centralized service
+```
+
+**Measurable Success Criteria:**
+
+| Metric | Target |
+|---|---|
+| Maintenance PRs per logic change | **1** (down from 12+) |
+| CI uptime during canary phase | **≥ 99%** |
+| Core orchestration test coverage | **≥ 90%** |
+| Webhook events dropped | **0** |
+| Legitimate maintainer merges blocked | **0** |
+
+This proposal defines **V2** — a centralized GitHub App replacing per-repository execution with a single hybrid orchestration service.
+
+| Version | Scope | Status |
+|---|---|---|
+| **V0** | Python SDK standalone scripts | Shipped |
+| **V1** | C++ SDK refactored architecture | Shipped |
+| **V2** | Centralized Hybrid GitHub App | **This project** |
+
+---
+
+## 🏗 System Architecture
+
+### Current State: Fragmented Per-Repo
+
+```mermaid
+graph TD
+    MC["👤 Maintainer / Contributor"]
+
+    subgraph cpp["hiero-sdk-cpp"]
+        C1[bot.js]
+        C2[assign.js]
+        C3[on-pr.yml]
+        C4[on-comment.yml]
+    end
+
+    subgraph python["hiero-sdk-python"]
+        P1[bot.js]
+        P2[assign.js]
+        P3[on-pr.yml]
+        P4[on-comment.yml]
+    end
+
+    subgraph js["hiero-sdk-js"]
+        J1[bot.js]
+        J2[assign.js]
+        J3[on-pr.yml]
+        J4[on-comment.yml]
+    end
+
+    MC -->|"Fix 1 bug"| cpp
+    MC -->|"Duplicate PR"| python
+    MC -->|"Duplicate PR"| js
+
+    style MC fill:#e74c3c,color:#fff,stroke:#c0392b
+    style cpp fill:#ffeaa7,stroke:#fdcb6e
+    style python fill:#ffeaa7,stroke:#fdcb6e
+    style js fill:#ffeaa7,stroke:#fdcb6e
+```
+
+> ⚠️ A single logic fix requires **12+ near-identical pull requests** across repositories.
+
+---
+
+### Target State: Hybrid GitHub App Architecture
+
+```mermaid
+graph TB
+    subgraph repos["Hiero Repositories (Opt-In)"]
+        R1["hiero-sdk-cpp\n📄 .github/hiero-workflow.yml"]
+        R2["hiero-sdk-python\n📄 .github/hiero-workflow.yml"]
+        R3["hiero-sdk-js\n📄 .github/hiero-workflow.yml"]
+    end
+
+    subgraph app["🧠 Central Hiero Probot App"]
+        ER["⚡ Event Router\n(index.js)"]
+        CE["⚙️ Config Engine\n(config/)"]
+        PR["📋 Policy Rules\n(/assign, /unassign)"]
+        AL["📊 Audit Logger"]
+        DS["🌉 Hybrid Dispatcher\n(services/dispatcher.js)"]
+    end
+
+    subgraph github["GitHub Platform"]
+        GA["🔧 GitHub API (Octokit)\nLabels · Comments · Statuses"]
+        GH["⚙️ GitHub Actions\nHeavy CI/CD Execution"]
+    end
+
+    R1 -->|"Webhooks (HMAC Verified)"| ER
+    R2 -->|"Webhooks (HMAC Verified)"| ER
+    R3 -->|"Webhooks (HMAC Verified)"| ER
+
+    ER --> CE
+    CE -->|"Reads .yml config"| R1
+    CE -->|"Reads .yml config"| R2
+    CE -->|"Reads .yml config"| R3
+
+    ER --> PR
+    PR --> AL
+    PR --> DS
+
+    PR -->|"Lightweight API Calls"| GA
+    DS -->|"repository_dispatch\n(sanitized payload)"| GH
+
+    style app fill:#0075ca,color:#fff,stroke:#005fa3
+    style repos fill:#f0f7ff,stroke:#0075ca
+    style github fill:#24292e,color:#fff,stroke:#444
+```
+
+---
+
+### PR Check Validation Pipeline
 
 ```mermaid
 flowchart TD
-    Core["packages/core shared logic"]
-    Actions["GitHub Actions adapter"]
-    Probot["Future Probot / GitHub App adapter"]
-    SDK["SDK workflow callers"]
-    Webhooks["GitHub webhooks"]
+    A(["🔔 PR Opened / Synchronized"]) --> B["GitHub App Receives Webhook"]
+    B --> C["🔐 HMAC-SHA256 Signature Verification"]
+    C -->|Invalid| X(["❌ DROP — Unauthorized Request"])
+    C -->|Valid| D["📖 Read .github/hiero-workflow.yml"]
+    D --> E{PR Checks Enabled?}
 
-    SDK --> Actions
-    Actions --> Core
-    Webhooks --> Probot
-    Probot --> Core
+    E -->|No| F["📝 Post Passive Note\nor Skip Execution"]
+    E -->|Yes| G["🌉 Dispatch Sanitized Payload\nto GitHub Actions"]
+
+    G --> H["🏃 Repository Workflow Runs\nDCO · GPG · Merge Conflict Checks"]
+    H --> I["App Collects Results\n& Updates PR Summary"]
+
+    I --> J{All Checks Pass?}
+    J -->|Yes| K(["✅ Comment + Status Update\n'Ready for Review' Signal"])
+    J -->|No| L(["🔄 Comment + Status Update\n'Revision Needed' Signal"])
+
+    style A fill:#27ae60,color:#fff,stroke:#1e8449
+    style X fill:#e74c3c,color:#fff,stroke:#c0392b
+    style K fill:#27ae60,color:#fff,stroke:#1e8449
+    style L fill:#e67e22,color:#fff,stroke:#ca6f1e
+    style C fill:#8e44ad,color:#fff,stroke:#7d3c98
 ```
 
-The key is that Probot should reuse the same core modules. It should not become a second copy of the logic.
+---
 
-## Security Model
-
-The migration must protect contributor workflows, maintainer trust, and repository permissions.
-
-### Security principles
-
-1. Keep security-critical workflow lines visible.
-2. Use least-privilege token permissions.
-3. Avoid running untrusted PR code in privileged contexts.
-4. Validate repo config before mutating state.
-5. Prefer dry-run before writes.
-6. Make rollback simple.
-7. Keep decision logs understandable.
-
-### Harden-runner visibility
-
-`step-security/harden-runner` should stay in caller workflows.
-
-This is important because:
-
-- maintainers can see the security step directly
-- StepSecurity tooling can inspect workflow files directly
-- the central action does not hide runner network policy
-- this avoids repeating the previous wrapper problem in C++
-
-The central action should not wrap harden-runner.
-
-### Local composite action risk
-
-C++ previously had a local composite setup action that tried to bundle setup steps. That approach failed for bot workflows because local action files must be available before they can run, while the action itself was supposed to perform checkout.
-
-This migration plan does not revive that pattern.
-
-### `pull_request_target` risk
-
-`pull_request_target` runs with base repository context. That is useful for labeling and commenting on fork PRs, but dangerous if untrusted PR code is executed with privileged tokens.
-
-Migration rule:
-
-> Do not checkout or execute untrusted PR head code with privileged tokens.
-
-If a workflow uses `pull_request_target`, the migration must preserve the existing trust boundary and avoid moving risky logic into opaque wrappers.
-
-### `workflow_run` artifact risk
-
-Some workflows may use `workflow_run` and artifacts. Those are awkward migration candidates because artifacts can be influenced by earlier jobs.
-
-Migration rule:
-
-> Keep artifact orchestration local until the artifact source, shape, and validation rules are explicit.
-
-### Action version pinning
-
-Production callers should not use floating `@main` references.
-
-Preferred production options:
-
-- release tag, such as `@v0.1.0`
-- full commit SHA for maximum stability
-
-`@main` is acceptable for local fork demos, but not for upstream production adoption.
-
-### Permission model
-
-Each caller workflow should declare only the permissions needed for that automation.
-
-For review-sync, likely permissions are:
-
-```yaml
-permissions:
-  contents: read
-  pull-requests: read
-  issues: write
-  checks: read
-```
-
-Some fork or pilot runs may use broader permissions while proving mechanics, but upstream adoption should review and narrow the final permission set.
-
-## Migration Flow
+### Event Routing & Decision Flow
 
 ```mermaid
-flowchart TD
-    Start["Candidate automation identified"]
-    Local["Keep workflow wiring local"]
-    Dry["Run central action in dry-run"]
-    Compare["Compare logs with expected behavior"]
-    Approve{"Maintainers approve?"}
-    Write["Enable writes in one pilot repo"]
-    Stable{"Stable for pilot window?"}
-    Expand["Evaluate next automation or SDK"]
-    Stop["Defer or revise"]
+sequenceDiagram
+    participant C as 👤 Contributor
+    participant GH as 🐙 GitHub
+    participant APP as 🧠 Probot App
+    participant CFG as ⚙️ Config Engine
+    participant ACT as ⚙️ GitHub Actions
+    participant API as 🔗 Octokit API
 
-    Start --> Local
-    Local --> Dry
-    Dry --> Compare
-    Compare --> Approve
-    Approve -->|No| Stop
-    Approve -->|Yes| Write
-    Write --> Stable
-    Stable -->|No| Stop
-    Stable -->|Yes| Expand
+    C->>GH: Posts /assign comment on issue
+    GH->>APP: Webhook (issue_comment.created)
+    APP->>APP: HMAC-SHA256 Verification
+    APP->>CFG: Fetch .github/hiero-workflow.yml
+    CFG-->>APP: Config (max_open_assignments: 2, enforce_skill_progression: true)
+    APP->>API: GET /repos/{owner}/{repo}/issues (check assignments)
+    API-->>APP: Current assignee list
+    APP->>APP: Evaluate policy rules
+    alt Assignment Allowed
+        APP->>API: POST /repos/{owner}/{repo}/issues/assignees
+        APP->>API: POST comment — ✅ Assigned successfully
+        APP->>APP: Write structured audit log entry
+    else Limit Reached
+        APP->>API: POST comment — ⚠️ Assignment limit reached
+        APP->>APP: Write structured audit log entry (REJECTED)
+    end
+    APP-->>GH: 200 OK
 ```
 
-## Phase 0: Current Proof
+---
 
-### Goal
+## ✨ Core Features
 
-Show that the strategy is more than a proposal. Prove that a central action can be called from an SDK repository while local workflow boundaries remain visible.
+### 🤖 Issue Lifecycle Automation
 
-### What changes
+| Command | Description | Permission Check |
+|---|---|---|
+| `/assign` | Self-assign an issue with cap enforcement | Skill-tier validation + open assignment limit |
+| `/unassign` | Remove yourself from an issue | Issue state verification + label reversion |
+| Auto stale | Cron-driven reassignment of inactive issues | Configurable `warning_days` + `auto_unassign_days` |
 
-Already completed in the candidate repos:
+### 🔍 PR Validation Pipeline
 
-- `sdk-automations` has shared core/action structure.
-- `sdk-automations` has CI and bundled action artifacts.
-- Python fork has `.github/hiero-automation.yml`.
-- Python fork has `central-review-sync-canary.yml`.
-- Python fork can call the central action.
+| Check | Mechanism | Trigger |
+|---|---|---|
+| DCO sign-off | Dispatched GitHub Action | PR opened/synchronized |
+| GPG signature | Dispatched GitHub Action | PR opened/synchronized |
+| Merge conflict detection | App-level API check | PR synchronized |
+| PR size warnings | App-level policy evaluation | PR opened/synchronized |
+| Stale assignment detection | Cron scheduler | Configurable interval |
 
-### What stays local
+### 📊 Audit & Observability
 
-In the Python fork:
+- Every bot decision is logged with: `repository` · `trigger event` · `yml rule evaluated` · `final outcome`
+- GitHub Check Runs integration for maintainer-facing PR dashboard
+- Exportable structured logs per milestone for maintainer review
 
-- trigger
-- permissions
-- harden-runner
-- checkout
-- config file
-- token choice
-- write/dry-run mode
+### 🔧 Per-Repository Configuration
 
-### Acceptance gate
+All behavior driven by a single declarative YAML file — **no JavaScript changes needed** per repository.
 
-Phase 0 is accepted when:
+---
 
-- the central repo CI passes
-- the Python fork canary workflow starts and completes
-- harden-runner remains visible in the caller workflow
-- the workflow calls the central action rather than a local script
-- the diff is limited to config and canary workflow files
+## 🔒 Security Model
 
-### Rollback plan
-
-Delete the canary workflow and config from the fork. No upstream production repo is affected.
-
-### Maintainer review required
-
-Informal review only. This is a fork proof, not an upstream production proposal.
-
-### Evidence produced
-
-- central repo CI run
-- Python fork canary run
-- Python fork workflow file
-- Python fork config file
-
-## Phase 1: Central Repo Stabilization
-
-### Goal
-
-Make `sdk-automations` safe enough for an upstream dry-run PR.
-
-### What changes
-
-Add or verify:
-
-- release tag such as `v0.1.0-demo` or `v0.1.0`
-- release notes explaining supported automation and known limits
-- permissions documentation per action
-- rollback documentation
-- schema validation documentation
-- CI gate that verifies generated action bundles are current
-- short note explaining that `dist/index.js` is generated
-
-### What stays local
-
-SDK repositories still own all workflows. No upstream SDK workflow changes are required in this phase.
-
-### Acceptance gate
-
-Phase 1 is accepted when:
-
-- central CI passes
-- action bundles are committed and current
-- docs explain caller permissions
-- docs explain release pinning
-- docs explain rollback
-- at least one release tag or pinned SHA recommendation exists
-
-### Rollback plan
-
-Do not adopt the action upstream until this phase passes. If a bad central release is created, mark it as deprecated and issue a new tag.
-
-### Maintainer review required
-
-Review from the automation mentor or maintainers who will evaluate the first upstream pilot.
-
-### Evidence produced
-
-- release tag or pinned SHA
-- CI run
-- release notes
-- docs updates
-
-## Phase 2: Python Upstream Dry-Run Pilot
-
-### Goal
-
-Open a small, low-risk PR to `hiero-sdk-python` that proves the central action can run from upstream without replacing existing automation.
-
-### What changes
-
-Add only:
-
-- `.github/hiero-automation.yml`
-- `.github/workflows/central-review-sync-canary.yml`
-
-The workflow should be manual first:
-
-```yaml
-on:
-  workflow_dispatch:
-```
-
-The action should run with dry-run enabled.
-
-### What stays local
-
-Python keeps:
-
-- current workflows
-- current scripts
-- current production behavior
-- trigger ownership
-- permissions
-- harden-runner
-- checkout
-- config file
-
-No existing Python automation is removed or replaced in this phase.
-
-### Acceptance gate
-
-Phase 2 is accepted when:
-
-- the upstream PR is small and reviewable
-- the workflow is manual
-- dry-run output is visible in Actions logs
-- no labels or PR state are changed
-- maintainers can compare intended changes against current review queue behavior
-
-### Rollback plan
-
-Close the PR or remove the canary workflow. Existing Python automation remains untouched.
-
-### Maintainer review required
-
-Python SDK maintainer approval before merge.
-
-### Evidence produced
-
-- upstream PR
-- dry-run workflow logs
-- comparison notes against existing review-sync behavior
-
-## Phase 3: Python Review-Sync Production Pilot
-
-### Goal
-
-Enable one low-risk automation for real in one SDK repository after dry-run behavior is accepted.
-
-### What changes
-
-The Python canary moves from manual dry-run to controlled write behavior.
-
-Possible options:
-
-- keep `workflow_dispatch` and allow maintainers to trigger write runs manually
-- add a limited schedule
-- add a narrow event trigger after review
-
-Only review-sync is enabled. No assignment logic is migrated in this phase.
-
-### What stays local
-
-Python still keeps workflow ownership and permissions local.
-
-### Acceptance gate
-
-Phase 3 is accepted when:
-
-- maintainers approve exact permissions
-- action is pinned to a release tag or SHA
-- review-sync writes match expected behavior
-- no unrelated labels are changed
-- rollback has been tested or documented
-- the pilot runs for an agreed observation window without maintainer complaints
-
-### Rollback plan
-
-Options:
-
-- disable the workflow
-- set dry-run back to true
-- revert the canary PR
-- pin back to a known-good action version
-
-### Maintainer review required
-
-Python SDK maintainers and automation mentor.
-
-### Evidence produced
-
-- workflow run logs
-- before/after label examples
-- issue list of edge cases found
-- rollback notes
-
-## Phase 4: Assignment Behavior Mapping
-
-### Goal
-
-Understand C++ and Python assignment behavior before extracting shared assignment logic.
-
-Assignment is higher risk than review-sync because it directly affects contributors.
-
-### What changes
-
-Create a behavior matrix covering:
-
-- supported commands
-- skill labels
-- priority labels
-- assignment limits
-- maintainer overrides
-- author restrictions
-- existing comment text
-- label transitions
-- stale assignment handling
-- race-condition handling
-- error messages
-- tests and fixtures
-
-### What stays local
-
-No assignment workflow changes are made in this phase.
-
-### Acceptance gate
-
-Phase 4 is accepted when:
-
-- C++ and Python behavior are documented side by side
-- common logic is identified
-- repo-specific policy is identified
-- test fixtures are listed
-- maintainers agree which behavior should be shared and which should remain repo-specific
-
-### Rollback plan
-
-No production behavior changes exist, so rollback is not needed.
-
-### Maintainer review required
-
-C++ and Python maintainers should review the behavior matrix before implementation.
-
-### Evidence produced
-
-- assignment behavior matrix
-- proposed config fields
-- test fixture list
-- migration risk list
-
-## Phase 5: Shared Assignment Core
-
-### Goal
-
-Implement shared assignment logic only after the behavior matrix is accepted.
-
-### What changes
-
-In `sdk-automations`:
-
-- add shared assignment core module
-- add config validation for assignment policy
-- add tests based on C++ and Python fixtures
-- add GitHub Action adapter support
-- add dry-run support
-
-### What stays local
-
-SDK repositories keep:
-
-- command trigger workflow
-- `issue_comment` event wiring
-- permissions
-- harden-runner
-- checkout
-- config values
-- rollout decision
-
-### Acceptance gate
-
-Phase 5 is accepted when:
-
-- central tests cover accepted behavior
-- dry-run output is understandable
-- comment text changes are intentional and reviewed
-- race-condition protections are preserved
-- no SDK repo has switched production assignment yet
-
-### Rollback plan
-
-Do not adopt the assignment action until tests and maintainer review pass. If a central release has a bug, patch centrally and issue a new version before SDK adoption.
-
-### Maintainer review required
-
-C++ and Python maintainers, because assignment is contributor-facing.
-
-### Evidence produced
-
-- central tests
-- fixture coverage
-- dry-run examples
-- release notes
-
-## Phase 6: C++ Canary
-
-### Goal
-
-Evaluate whether C++ should adopt central actions after the interface is proven through Python.
-
-### What changes
-
-Start with simple workflows first. Do not begin with awkward workflows.
-
-Potential candidates:
-
-- simple PR open/update workflows if the central action clearly reduces local duplication
-- non-mutating dry-run mode first
-
-Avoid initial migration of:
-
-- `on-pr-review-labels.yaml` if artifact handling is still local and nuanced
-- `on-pr-close.yaml` if multi-job behavior would make a wrapper too complex
-- assignment workflows until shared assignment core is fully tested
-
-### What stays local
-
-C++ keeps:
-
-- event triggers
-- `pull_request_target` boundaries
-- harden-runner
-- checkout refs
-- artifact handling
-- multi-job structure
-- config file
-
-### Acceptance gate
-
-Phase 6 is accepted when:
-
-- #1627 investigation has a clear recommendation
-- simple and awkward workflow before/after examples are reviewed
-- StepSecurity concerns are addressed
-- no contributor-facing behavior changes without explicit maintainer approval
-- dry-run output is reviewed before writes
-
-### Rollback plan
-
-Revert the C++ canary workflow change or pin back to previous local behavior.
-
-### Maintainer review required
-
-C++ maintainers. This phase should not proceed from the central repo alone.
-
-### Evidence produced
-
-- #1627 recommendation
-- before/after workflow examples
-- dry-run logs
-- maintainer approval notes
-
-## Phase 7: Wider SDK Rollout
-
-### Goal
-
-Expand only after one SDK pilot is stable and maintainers agree that the shared action model is useful.
-
-### What changes
-
-Other SDKs may adopt shared automations where they have matching needs.
-
-Possible later candidates:
-
-- `hiero-sdk-js`
-- `hiero-sdk-java`
-- `hiero-sdk-tck`
-- `hiero-sdk-rust`
-- `hiero-sdk-go`
-- `hiero-sdk-swift`
-- `hiero-did-sdk-python`
-- `hiero-did-sdk-js`
-
-### What stays local
-
-Each SDK keeps workflow ownership and only opts into automations it actually needs.
-
-### Acceptance gate
-
-Phase 7 is accepted when:
-
-- at least one SDK pilot has been stable
-- central release process is trusted
-- docs cover how a new SDK opts in
-- adoption PRs are small and per-repo
-- no repo is forced to adopt unrelated policy
-
-### Rollback plan
-
-Each SDK can revert its own workflow/config PR or pin to a previous action version.
-
-### Maintainer review required
-
-Maintainers for each adopting SDK.
-
-### Evidence produced
-
-- adoption checklist
-- per-SDK PRs
-- run logs
-- release notes
-
-## Phase 8: Probot / GitHub App Adapter
-
-### Goal
-
-Add centralized webhook orchestration only after the core logic and config contracts are stable.
-
-### What changes
-
-Add a Probot or GitHub App adapter that reuses `packages/core`.
-
-The app may later handle:
-
-- webhook routing
-- installation-based authentication
-- cross-repo orchestration
-- centralized audit logs
-- dashboards or reporting
-- scheduled jobs that do not naturally belong in a single SDK workflow
-
-### What stays local
-
-SDKs should still keep workflow-owned tasks local when GitHub Actions are the better execution environment.
-
-### Acceptance gate
-
-Phase 8 is accepted when:
-
-- hosting ownership is clear
-- secrets management is clear
-- incident response is clear
-- webhook signature validation is tested
-- rate limit behavior is tested
-- central logs are available
-- the app reuses existing core logic instead of rewriting it
-
-### Rollback plan
-
-Disable app installation or disable specific feature flags. SDK workflow-based action calls can continue independently if needed.
-
-### Maintainer review required
-
-Organization maintainers and whoever owns production hosting.
-
-### Evidence produced
-
-- app architecture doc
-- deployment runbook
-- security review
-- webhook test fixtures
-- audit log examples
-
-## Rollout Timeline View
+This architecture is designed with a **fail-closed security posture**. Every layer explicitly models and mitigates a distinct attack class.
 
 ```mermaid
-flowchart LR
-    P0["Phase 0 Current proof"] --> P1["Phase 1 Central repo stabilization"]
-    P1 --> P2["Phase 2 Python dry-run pilot"]
-    P2 --> P3["Phase 3 Python production pilot"]
-    P3 --> P4["Phase 4 Assignment mapping"]
-    P4 --> P5["Phase 5 Shared assignment core"]
-    P5 --> P6["Phase 6 C++ canary"]
-    P6 --> P7["Phase 7 Wider SDK rollout"]
-    P7 --> P8["Phase 8 Probot adapter"]
+graph LR
+    subgraph threats["⚠️ Threat Vectors"]
+        T1["PR Injection\n(fork code execution)"]
+        T2["Webhook Spoofing"]
+        T3["Bot Feedback Loops"]
+        T4["Race Conditions\n(concurrent /assign)"]
+        T5["Rate Limit Exhaustion"]
+        T6["Payload Injection\n(malicious Markdown)"]
+    end
+
+    subgraph mitigations["🛡️ Mitigations"]
+        M1["Sanitized repository_dispatch\n(no fork code executed)"]
+        M2["HMAC-SHA256\nWebhook Verification"]
+        M3["Actor-type validation\n+ bot-guard checks"]
+        M4["Async task queue\nkeyed by issue number"]
+        M5["Rate limit governor\n+ exponential backoff"]
+        M6["Strict payload schema\nvalidation before dispatch"]
+    end
+
+    T1 --> M1
+    T2 --> M2
+    T3 --> M3
+    T4 --> M4
+    T5 --> M5
+    T6 --> M6
+
+    style threats fill:#ffeef0,stroke:#e74c3c
+    style mitigations fill:#eafaf1,stroke:#27ae60
 ```
 
-This timeline is intentionally sequential at the decision points. Some research work can happen in parallel, but production rollout should move through gates.
+### Security Boundary Definitions
 
-## What Not To Migrate Yet
+**1. PR Injection Mitigation**
 
-Do not migrate all C++ workflows now.
+The App acts as a **secure airgap**. Fork webhook payloads are intercepted externally, evaluated in the isolated Node.js environment, and only **sanitized, explicitly defined parameters** are forwarded via `repository_dispatch`. No untrusted fork code ever executes with elevated privileges.
 
-Reason: C++ is high-value but sensitive. It uses contributor-facing automation and has workflows with `pull_request_target`, `workflow_run`, artifacts, and multi-job behavior.
+**2. Least-Privilege Permission Model**
 
-Do not hide harden-runner.
+```
+✅ Issues: Read + Write          ← Required for /assign, /unassign
+✅ Pull Requests: Read + Write   ← Required for PR validation pipeline
+✅ Metadata: Read-only           ← Required for repo context
+✅ Contents: Read-only           ← Required to fetch hiero-workflow.yml
 
-Reason: harden-runner visibility is part of the security posture and avoids repeating prior StepSecurity noise.
+❌ Repository secrets            ← Explicitly excluded
+❌ Workflow administration       ← Explicitly excluded
+❌ Direct code-write access      ← Explicitly excluded
+```
 
-Do not centralize workflow YAML just for aesthetics.
+Unlike PATs (which grant repository-wide write and represent a massive security liability), the GitHub App operates under **restrictive cryptographic bounds** minimizing blast radius in the event of any compromise.
 
-Reason: workflow YAML contains repository-specific security and event boundaries. Removing duplication is only useful when it removes real maintenance cost.
+**3. Cryptographic Webhook Verification**
 
-Do not migrate assignment logic until Python and C++ behavior are compared.
+Every incoming webhook is authenticated via **HMAC-SHA256** using a private webhook secret. Any request failing validation is **immediately dropped** before any processing occurs.
 
-Reason: assignment impacts contributors directly. A central version must preserve accepted behavior and expose repo-specific policy as config.
+**4. Fail-Safe Degradation**
 
-Do not make Probot the first dependency.
+> If the App crashes or goes offline — **the repository does not lock**.
 
-Reason: Probot adds hosting and operations. It should reuse proven core logic later.
+Human maintainers retain all native GitHub UI capabilities. The App only handles automation; it never gates critical repository operations.
 
-## Communication Plan
+**5. Non-Repudiation**
 
-### Sophie-facing summary
+Centralized decision-making inherently generates a **unified, structured audit trail**. Every bot action records: `who triggered it` · `which yml rule applied` · `what the outcome was`.
 
-Use this framing:
+---
 
-> I wrote the migration strategy as a phased rollout rather than a big migration. The plan starts with the Python review-sync proof, keeps workflow/security boundaries local, adds safety gates before each production step, and only brings C++ and Probot in after the shared action interface is proven.
+## ⚙️ Configuration Reference
 
-### Robert / #1627 framing
-
-Use this framing:
-
-> The recommendation is to change direction from workflow wrapper refactor to central action/core extraction. C++ production workflows should stay unchanged until the design investigation proves which pieces are safe to centralize. Harden-runner remains visible in caller workflows.
-
-### Interview / demo checklist
-
-Have these links ready:
-
-- central repo: https://github.com/darshit2308/sdk-automations
-- central CI: https://github.com/darshit2308/sdk-automations/actions/runs/25763437710
-- Python fork: https://github.com/darshit2308/hiero-sdk-python
-- Python canary run: https://github.com/darshit2308/hiero-sdk-python/actions/runs/25763950499/job/75671903429
-- C++ investigation: https://github.com/hiero-ledger/hiero-sdk-cpp/issues/1627
-- LFDT project: https://github.com/LF-Decentralized-Trust-Mentorships/mentorship-program/issues/73
-
-Suggested demo flow:
-
-1. Show the central repo structure.
-2. Show `packages/core` and the action adapter split.
-3. Show central CI passing.
-4. Show Python canary workflow.
-5. Show harden-runner still visible.
-6. Show repo-local config.
-7. Show successful run.
-8. Explain the phased rollout gates.
-
-## Optional Visuals To Add Later
-
-These are optional Excalidraw or image slots if a visual version is useful later.
-
-### Optional visual: migration timeline
-
-A horizontal timeline showing:
-
-- current proof
-- central repo stabilization
-- Python dry-run
-- Python production pilot
-- assignment mapping
-- C++ canary
-- wider SDK rollout
-- Probot adapter
-
-### Optional visual: SDK repo responsibility split
-
-A two-column diagram:
-
-- SDK repo owns triggers, permissions, harden-runner, checkout, config, rollout.
-- Central repo owns core logic, schema, tests, adapters, releases, examples.
-
-### Optional visual: Actions-first now, Probot later
-
-A diagram showing both GitHub Actions and Probot feeding into the same `packages/core` logic.
-
-## Appendix A: SDK Repository Matrix
-
-| Repository | Suggested rollout tier | Reason |
-| --- | --- | --- |
-| `hiero-sdk-python` | Tier 1 | Large automation surface and bounded review-sync pilot. |
-| `hiero-sdk-cpp` | Tier 2 | High-value bot logic, but contributor-facing and sensitive. |
-| `hiero-sdk-js` | Tier 3 | Active SDK, later candidate after shared model is stable. |
-| `hiero-sdk-java` | Tier 3 | Active SDK, likely later workflow/policy adoption. |
-| `hiero-sdk-tck` | Tier 3 | Compatibility workflow focus, adopt only if shared automation fits. |
-| `hiero-sdk-rust` | Tier 4 | Smaller workflow surface. |
-| `hiero-sdk-go` | Tier 4 | Smaller workflow surface. |
-| `hiero-sdk-swift` | Tier 4 | Smaller workflow surface. |
-| `hiero-did-sdk-python` | Tier 4 | Existing local action pattern, evaluate later. |
-| `hiero-did-sdk-js` | Tier 4 | Existing local action pattern, evaluate later. |
-
-## Appendix B: Safety Checklist
-
-Before an SDK adopts a central action:
-
-- [ ] Caller workflow keeps harden-runner visible.
-- [ ] Caller workflow declares minimal permissions.
-- [ ] Caller workflow pins the central action to a tag or SHA.
-- [ ] Repo config validates successfully.
-- [ ] Dry-run logs are reviewed.
-- [ ] Rollback path is documented.
-- [ ] Maintainers approve write mode.
-- [ ] No untrusted PR code is executed with privileged tokens.
-- [ ] Artifact handling remains local unless explicitly validated.
-- [ ] Existing behavior has tests or comparison notes.
-
-## Appendix C: Caller Workflow Examples
-
-### Python dry-run canary
+Each participating repository opts into automation via `.github/hiero-workflow.yml`. No JavaScript changes required.
 
 ```yaml
-name: Central Review Sync Canary
+# .github/hiero-workflow.yml
+# Full configuration reference for Hiero Workflow App
 
-on:
-  workflow_dispatch:
+workflows:
 
-permissions:
-  contents: read
-  pull-requests: read
-  issues: read
-  checks: read
+  # ── Issue Assignment Automation ─────────────────────────────────────
+  assign:
+    enabled: true                      # Enable /assign and /unassign commands
+    max_open_assignments: 2            # Maximum concurrent open issue assignments per user
+    enforce_skill_progression: true    # Require GFI before medium; medium before hard
+    needs_review_bypass: true          # Top contributors bypass assignment cap
 
-jobs:
-  review-sync-canary:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@v2
-        with:
-          egress-policy: audit
+  # ── PR Validation Pipeline ──────────────────────────────────────────
+  pr_pipeline:
+    require_dco: true                  # Enforce Developer Certificate of Origin
+    require_gpg: true                  # Enforce GPG commit signing
+    size_warnings_enabled: true        # Warn on oversized PRs
+    size_warning_threshold: 500        # Lines changed threshold for size warning
+    changes_requested_to_draft: true   # Auto-convert PR to draft on changes-requested
 
-      - name: Checkout repository
-        uses: actions/checkout@v4
+  # ── Stale Assignment Management ─────────────────────────────────────
+  stale_assignments:
+    enabled: true                      # Enable automatic stale assignment detection
+    warning_days: 21                   # Days before posting inactivity warning
+    auto_unassign_days: 28             # Days before automatic unassignment
 
-      - name: Run central review sync
-        uses: hiero-hackers/sdk-automations/actions/review-sync@v0.1.0
-        with:
-          config-path: .github/hiero-automation.yml
-          github-token: ${{ github.token }}
-          dry-run: true
+  # ── Community Review Signals ─────────────────────────────────────────
+  community_review:
+    enabled: true                      # Post 'help-wanted: reviewer' on GFI/beginner PRs
+    label: "help-wanted: reviewer"     # Label to apply
+
+  # ── Audit & Observability ────────────────────────────────────────────
+  audit:
+    log_level: structured              # Options: structured | verbose | minimal
+    retention_days: 90                 # Audit log retention window
+    check_runs_enabled: true           # Post results to GitHub Check Runs dashboard
 ```
 
-### Python controlled write pilot
+### Configuration Behavior Matrix
+
+| Scenario | Behavior |
+|---|---|
+| Repository has no `hiero-workflow.yml` | Defaults to **warn-only** mode — logs telemetry, no state mutations |
+| Feature toggle `enabled: false` | That capability is fully skipped — no API calls made |
+| App offline / crashed | Repositories continue operating normally via native GitHub UI |
+| Webhook HMAC fails | Request dropped immediately before any processing |
+
+---
+
+## 📁 Project Structure
+
+```
+sdk-automations/
+│
+├── 📄 action.yml                    # GitHub Action entrypoint (review-sync)
+│
+├── dist/                            # Compiled Action artifacts
+│
+├── packages/
+│   ├── core/
+│   │   └── src/
+│   │       ├── 📄 index.js          # ⚡ Event Router — Probot entrypoint, webhook ingestion
+│   │       │
+│   │       ├── automations/
+│   │       │   ├── review-sync/     # PR review queue synchronization logic
+│   │       │   └── run-automation/  # Automation runner framework
+│   │       │
+│   │       ├── commands/
+│   │       │   ├── assign.js        # /assign command — policy evaluation + API call
+│   │       │   └── unassign.js      # /unassign command — state verification + reversion
+│   │       │
+│   │       ├── config/
+│   │       │   └── index.js         # Config reader — fetches + validates hiero-workflow.yml
+│   │       │
+│   │       ├── services/
+│   │       │   └── dispatcher.js    # 🌉 Hybrid Bridge — fires repository_dispatch to Actions
+│   │       │
+│   │       ├── helpers/
+│   │       │   └── api.js           # Octokit adapter — rate limiting, retries, error handling
+│   │       │
+│   │       └── github/              # GitHub integration utilities
+│   │
+│   ├── github-action-adapter/       # Adapter layer bridging App ↔ Actions
+│   ├── probot-app/                  # Probot App bootstrap + webhook server
+│   └── schemas/
+│       └── hiero-automation.schema.json   # JSON Schema for workflow config validation
+│
+├── docs/
+│   ├── adrs/                        # Architecture Decision Records
+│   │   ├── architecture.md
+│   │   ├── caller-interface.md
+│   │   ├── migration-plan.md
+│   │   └── stepsecurity.md
+│   └── examples/
+│       ├── hiero-sdk-cpp/           # Example integration for C++ SDK
+│       └── hiero-sdk-python/        # Example integration for Python SDK
+│
+├── tests/
+│   ├── config.test.js               # Config reader unit tests
+│   ├── review-sync.test.js          # Review sync integration tests
+│   └── test-utils.js                # Shared test utilities + mock factories
+│
+├── .github/
+│   └── workflows/
+│       └── ci.yml                   # CI pipeline — lint, test, coverage gate
+│
+├── package.json
+├── package-lock.json
+└── README.md
+```
+
+### Module Responsibility Boundaries
+
+```mermaid
+graph TD
+    WH["🔔 Webhook Received"] --> IDX["index.js\n⚡ Event Router"]
+    IDX --> CFG["config/\n⚙️ Config Reader\n+ Validator"]
+    IDX --> CMD["commands/\n📋 assign.js\nunassign.js"]
+    IDX --> SVC["services/dispatcher.js\n🌉 Hybrid Bridge"]
+
+    CMD --> API["helpers/api.js\n🔗 Octokit Adapter\nRate Limit · Retry · Error"]
+    SVC --> GHA["⚙️ GitHub Actions\nHeavy CI Execution"]
+    API --> GHI["🐙 GitHub API\nLabels · Comments · Statuses"]
+
+    CFG -->|"Returns typed config object"| CMD
+    CFG -->|"Returns typed config object"| SVC
+
+    style IDX fill:#0075ca,color:#fff
+    style CFG fill:#8e44ad,color:#fff
+    style CMD fill:#27ae60,color:#fff
+    style SVC fill:#e67e22,color:#fff
+    style API fill:#2c3e50,color:#fff
+```
+
+---
+
+## 🗺 Implementation Milestones & Roadmap
+
+```mermaid
+gantt
+    title Hiero Workflow App — Implementation Timeline
+    dateFormat  YYYY-MM-DD
+    axisFormat  %b %d
+
+    section Pre-Mentorship (Shipped)
+    hiero-sdk-cpp PRs #1246–#1494        :done, 2026-01-01, 2026-04-30
+    hiero-sdk-python Issue #2229 + PR #2242 :done, 2026-03-01, 2026-05-14
+    hiero-hackers analytics PR #158      :done, 2026-04-01, 2026-05-14
+
+    section Milestone 1 — Core Orchestration
+    hiero-workflow.yml schema finalization :active, m1, 2026-06-15, 30d
+    Probot event router + config reader   :m1b, after m1, 15d
+
+    section Milestone 2 — Hybrid Pipeline
+    Dispatcher bridge (App → Actions)    :m2, 2026-07-16, 38d
+    PR validation engine (DCO, GPG)      :m2b, 2026-07-20, 34d
+    90%+ test coverage gate              :m2c, 2026-08-10, 13d
+
+    section Midterm Evaluation
+    Live hybrid pipeline demo            :milestone, 2026-08-24, 7d
+
+    section Milestone 3 — Audit Logging
+    Structured audit log implementation  :m3, 2026-09-01, 30d
+    Maintainer-facing diagnostics        :m3b, 2026-09-15, 16d
+
+    section Milestone 4 — Canary Rollout
+    hiero-sdk-cpp canary deployment      :m4, 2026-10-01, 31d
+    Rate limit + webhook production test :m4b, 2026-10-05, 26d
+
+    section Milestone 5 — Stretch Goals
+    Stale assignment cron worker         :m5, 2026-11-01, 14d
+    Plugin architecture documentation    :m5b, 2026-11-07, 7d
+
+    section Final Evaluation
+    Cross-org adoption docs + handoff    :final, 2026-11-15, 15d
+```
+
+### Milestone Deliverables
+
+| Phase | Timeline | Deliverable |
+|---|---|---|
+| **M1** — Core Orchestration | Jun 15 – Jul 15 | App reads `.github/hiero-workflow.yml` per repo; feature toggles parse correctly |
+| **M2** — Hybrid Pipeline | Jul 16 – Aug 23 | Dispatcher bridge functional; PR validation end-to-end with **≥ 90% test coverage** |
+| **Midterm** | Aug 24 – 31 | Live demo of hybrid PR pipeline in `hiero-hackers` sandbox |
+| **M3** — Audit Logging | Sep 1 – 30 | Transparent, queryable audit trails fully operational |
+| **M4** — Canary Rollout | Oct 1 – 31 | App runs safely on `hiero-sdk-cpp` for 30 days without dropping events or blocking PRs |
+| **M5** — Stretch Goals | Nov 1 – 14 | Stale-issue sweeper + documented plugin extension architecture |
+| **Final** | Nov 15 – 30 | Cross-organization adoption guides + maintainer handoff documentation |
+
+### Mapping to Issue #73 Requirements
+
+| Requirement | Delivered In |
+|---|---|
+| Reusable GitHub App for maintainer workflows | M1 + M2 (core Probot service + hybrid dispatcher) |
+| Configurable per-repository feature toggles | M1 (dynamic YAML reader — no code changes per repo) |
+| Tests covering core logic + safety constraints | M2 + M4 (TDD + live canary) |
+| Documentation for maintainers and contributors | Final phase |
+| Extension hooks for future workflows | M5 (documented integration boundaries) |
+
+---
+
+## 🧪 Testing Strategy
+
+> *"Safety and testing are perhaps the most important part of this initiative."*
+
+This project is developed under strict **Test-Driven Development (TDD)** with a layered validation matrix.
+
+```mermaid
+graph TB
+    subgraph layers["Testing Pyramid"]
+        E2E["🌐 E2E Live-System Tests\nReal webhooks → App → Actions → PR dashboard"]
+        SEC["🔐 Security Validation Tests\nHMAC spoofing · Malicious Markdown injection"]
+        INT["🔗 Integration Tests\nProbot event router · Octokit mocks · Hybrid handoff"]
+        UNIT["⚡ Unit Tests\nStateless utility functions · Business rule isolation"]
+    end
+
+    UNIT --> INT --> SEC --> E2E
+
+    style UNIT fill:#27ae60,color:#fff
+    style INT fill:#2980b9,color:#fff
+    style SEC fill:#8e44ad,color:#fff
+    style E2E fill:#e74c3c,color:#fff
+```
+
+### Test Layer Definitions
+
+**Unit Tests (Pure Logic)**
+- Validates stateless functions in `checks.js` — skill-tier prerequisites, PR size limits
+- Zero mocked network requests — pure deterministic evaluation
+- Target: **100% coverage** of all state-mutation utility functions
+
+**Integration Tests (The Hybrid Bridge)**
+- Tests Probot event router and Octokit adapters using mocked GitHub payloads via `nock`
+- Critically verifies the **Hybrid Handoff** — that `repository_dispatch` fires with correct sanitized parameters
+
+**Failure-Path & Chaos Matrix**
+```
+✅ Octokit API timeout simulation
+✅ GitHub rate-limit rejection simulation
+✅ Race condition simulation (3 concurrent /assign commands)
+✅ Async queue collision handling verification
+```
+
+**Security Validation**
+```
+✅ Spoofed webhook → HMAC-SHA256 rejection
+✅ Malicious Markdown in comments → payload sanitization before dispatch
+✅ Oversized payload → schema validation rejection
+```
+
+**E2E Live-System Validation**
+- End-to-end tests against live `hiero-hackers` sandbox
+- Full lifecycle: real webhook → centralized App → live GitHub Action → PR dashboard comment
+
+### Quality Gates
 
 ```yaml
-permissions:
-  contents: read
-  pull-requests: read
-  issues: write
-  checks: read
+# .github/workflows/ci.yml — enforced on every PR
+- name: Coverage Enforcement
+  run: |
+    # Blocks any PR that drops core coverage below 90%
+    npx jest --coverage --coverageThreshold='{"global":{"branches":90,"functions":90,"lines":90}}'
+
+- name: Architect Review Required
+  # Mandatory LFDT mentor approval for:
+  # - Changes to core Probot routing logic
+  # - GitHub Actions dispatch payloads
+  # - Security boundary modifications
 ```
 
-Only enable this after maintainers accept dry-run output.
+---
 
-### Future generic action shape
+## 🏆 Pre-Mentorship Contributions — Proof of Execution
 
-```yaml
-- name: Run shared automation
-  uses: hiero-hackers/sdk-automations/actions/run-automation@v0.1.0
-  with:
-    automation: review-sync
-    config-path: .github/hiero-automation.yml
-    github-token: ${{ github.token }}
-    dry-run: true
+> **Extensive ecosystem familiarity before the formal program starts.**
+
+### Hiero C++ SDK — Automation Hardening
+
+| PR | Title | Status | What It Proves |
+|---|---|---|---|
+| [#1246](https://github.com/hiero-ledger/hiero-sdk-cpp/pull/1246) | `/unassign` command implementation | ✅ Merged | Permission validation, issue state verification, automated label reversion, unit tests |
+| [#1365](https://github.com/hiero-ledger/hiero-sdk-cpp/pull/1365) | TOCTOU race condition removal | ✅ Merged | Race-condition hardening in live CI/CD automation |
+| [#1409](https://github.com/hiero-ledger/hiero-sdk-cpp/pull/1409) | Stale label revalidation before assignment | ✅ Merged | Prevention of stale-assignment race conditions |
+| [#1468](https://github.com/hiero-ledger/hiero-sdk-cpp/pull/1468) | Remove `kind` label requirement | ✅ Merged | Reduced contributor friction without breaking backward compatibility |
+| [#1494](https://github.com/hiero-ledger/hiero-sdk-cpp/pull/1494) | `needs-review` bypass for top contributors | ✅ Merged | Assignment-cap bypass to unblock high-velocity contributors |
+
+### Protocol Correctness & Distributed Systems
+
+| PR | Repository | Status | What It Proves |
+|---|---|---|---|
+| [#57](https://github.com/hiero-ledger/hiero-did-sdk-js/pull/57) | `hiero-did-sdk-js` | ✅ Merged | Hedera mirror node timeout diagnostics, distributed systems debugging |
+| [#22](https://github.com/hiero-platform/heka-identity-platform/pull/22) | `heka-identity-platform` | ✅ Merged | OID4VCI credential flow correctness, Heka codebase depth |
+| [#25](https://github.com/hiero-platform/heka-identity-platform/pull/25) | `heka-identity-platform` | ✅ Merged | Production API correctness fixes |
+| [#69](https://github.com/hiero-platform/heka-identity-platform/pull/69) | `heka-identity-platform` | 🔄 Open | Wallet DID persistence + Admin wallet ID alignment |
+
+### Ecosystem Analytics & Pre-Mentorship Python SDK Work
+
+| Contribution | Repository | Status | What It Proves |
+|---|---|---|---|
+| [PR #158](https://github.com/hiero-hackers/analytics/pull/158) | `hiero-hackers/analytics` | ✅ Merged | Maintainer telemetry, issue-creation activity signals |
+| [Issue #2229](https://github.com/hiero-ledger/hiero-sdk-python/issues/2229) | `hiero-sdk-python` | 📋 Active | Architectural proposal — 4-phase review queue automation |
+| [PR #2242](https://github.com/hiero-ledger/hiero-sdk-python/pull/2242) | `hiero-sdk-python` | 🔄 Open | Phase 1 — Foundation + Label Sync implementation |
+| [PR #2254](https://github.com/hiero-ledger/hiero-sdk-python/pull/2254) | `hiero-sdk-python` | 🔄 Open | Phase 2 — Difficulty-based routing |
+| [PR #2262](https://github.com/hiero-ledger/hiero-sdk-python/pull/2262) | `hiero-sdk-python` | 🔄 Open | Phase 3 — Assignment + comment automation |
+
+### Exploratory Prototypes (Research Phase)
+
+| Prototype | Focus | Key Findings |
+|---|---|---|
+| [`hiero-workflow-probot`](https://github.com/darshit2308/hiero-workflow-probot) | Orchestration + Dynamic Configuration | Repository-level `.yml` config can drive centralized behavior; App correctly parses feature toggles per repository |
+| [`heiro-probot-official`](https://github.com/darshit2308/heiro-probot-official) | Porting Hiero's Business Logic | Hiero's C++ SDK `/assign` + `/unassign` routines — including skill-tier checks and assignment limits — successfully operate entirely through the Octokit API outside of GitHub Actions |
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+```bash
+node --version   # Requires Node.js 18+
+npm --version    # Requires npm 8+
 ```
 
-## Appendix D: Rollback Examples
+### Installation
 
-Rollback can happen at several levels.
+```bash
+# Clone the repository
+git clone https://github.com/darshit2308/sdk-automations.git
+cd sdk-automations
 
-### Disable workflow
+# Install dependencies
+npm install
 
-```yaml
-on:
-  workflow_dispatch:
+# Copy environment template
+cp .env.example .env
 ```
 
-Keep the workflow manual only until ready.
+### Environment Configuration
 
-### Return to dry-run
+```env
+# .env
+APP_ID=<your-github-app-id>
+PRIVATE_KEY=<your-github-app-private-key>
+WEBHOOK_SECRET=<your-hmac-webhook-secret>
+GITHUB_CLIENT_ID=<your-github-client-id>
+GITHUB_CLIENT_SECRET=<your-github-client-secret>
 
-```yaml
-with:
-  dry-run: true
+# Optional
+LOG_LEVEL=info
+NODE_ENV=development
 ```
 
-### Pin back to previous release
+### Repository Opt-In
 
-```yaml
-uses: hiero-hackers/sdk-automations/actions/review-sync@v0.1.0
+Add `.github/hiero-workflow.yml` to any repository you want the App to manage (see [Configuration Reference](#-configuration-reference)).
+
+---
+
+## 💻 Local Development
+
+```bash
+# Start the Probot App locally (with webhook tunnel via smee.io)
+npm run dev
+
+# Run the full test suite
+npm test
+
+# Run tests with coverage report
+npm run test:coverage
+
+# Run only unit tests
+npm run test:unit
+
+# Run only integration tests
+npm run test:integration
+
+# Lint the codebase
+npm run lint
+
+# Build the GitHub Action (dist/)
+npm run build
 ```
 
-### Revert SDK adoption PR
+### Testing Against a Live Repository
 
-Because each SDK keeps its own workflow/config, rollback is a small repo-local revert.
+```bash
+# 1. Create a smee.io channel for local webhook forwarding
+npx smee-client --url https://smee.io/<your-channel> --target http://localhost:3000/
 
-## Appendix E: Research References
+# 2. Configure your GitHub App's webhook URL to point to your smee channel
 
-GitHub and security references:
+# 3. Start the dev server
+npm run dev
 
-- GitHub Actions events and `pull_request_target`: https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target
-- Reusing workflows: https://docs.github.com/en/actions/how-tos/sharing-automations/reusing-workflows
-- Action metadata syntax: https://docs.github.com/en/actions/reference/workflows-and-actions/metadata-syntax
-- GitHub Apps: https://docs.github.com/en/apps/creating-github-apps/about-creating-github-apps/about-creating-github-apps
-- Probot docs: https://probot.github.io/docs/
-- StepSecurity harden-runner: https://github.com/step-security/harden-runner
+# 4. Trigger events in your test repository and observe live routing
+```
 
-Project references:
+---
 
-- LFDT mentorship issue #73: https://github.com/LF-Decentralized-Trust-Mentorships/mentorship-program/issues/73
-- C++ shared workflow investigation #1627: https://github.com/hiero-ledger/hiero-sdk-cpp/issues/1627
-- Central automation candidate repo: https://github.com/darshit2308/sdk-automations
-- Python fork canary repo: https://github.com/darshit2308/hiero-sdk-python
-- Central repo CI run: https://github.com/darshit2308/sdk-automations/actions/runs/25763437710
-- Python canary run: https://github.com/darshit2308/hiero-sdk-python/actions/runs/25763950499/job/75671903429
+## 📡 API & Dispatcher Reference
 
-## Final Recommendation
+### Supported Webhook Events
 
-Proceed with the shared automation migration, but only through phased adoption.
+| Event | Action | Handler |
+|---|---|---|
+| `issue_comment` | `created` | Parses `/assign`, `/unassign` commands |
+| `pull_request` | `opened`, `synchronize` | Triggers PR validation pipeline |
+| `pull_request_review` | `submitted` | Handles `changes_requested_to_draft` |
+| `schedule` (cron) | — | Stale assignment detection sweep |
 
-The next concrete step should be Phase 1: stabilize the central repo for review and prepare a small Python upstream dry-run PR. C++ should remain in investigation mode until Python review-sync proves the action interface and the maintainers accept the rollout pattern.
+### Dispatcher Payload Schema
 
-This path gives the project a working proof without sacrificing security visibility, local repository control, or maintainer confidence.
+When dispatching to GitHub Actions, only sanitized parameters are forwarded:
+
+```javascript
+// services/dispatcher.js
+await octokit.repos.createDispatchEvent({
+  owner,
+  repo,
+  event_type: 'hiero-workflow-pr-check',
+  client_payload: {
+    pr_number: payload.pull_request.number,   // integer — validated
+    sha: payload.pull_request.head.sha,       // string — sha format validated
+    checks: {
+      require_dco: config.pr_pipeline.require_dco,
+      require_gpg: config.pr_pipeline.require_gpg,
+    }
+    // ⛔ No raw fork content — no untrusted code — no elevated secrets
+  }
+})
+```
+
+### Standard Response Format
+
+All validation gates return a strictly typed object:
+
+```typescript
+interface ValidationResult {
+  success: boolean;
+  data?: Record<string, unknown>;
+  error?: {
+    code: string;
+    message: string;
+    context?: Record<string, unknown>;
+  };
+}
+```
+
+---
+
+## 📊 Audit & Observability
+
+Every bot action generates a structured log entry:
+
+```json
+{
+  "timestamp": "2026-09-15T10:32:41.123Z",
+  "event_type": "issue_comment.assign",
+  "repository": "hiero-ledger/hiero-sdk-cpp",
+  "actor": "contributor-username",
+  "issue_number": 1042,
+  "rule_evaluated": "assign.max_open_assignments",
+  "rule_value": 2,
+  "current_count": 2,
+  "outcome": "REJECTED",
+  "reason": "Assignment limit reached",
+  "action_taken": "Posted informative comment — no state mutation"
+}
+```
+
+Audit entries are recorded via:
+- **GitHub Check Runs** — visible on every PR dashboard
+- **Structured log stream** — queryable per repository and per time range
+- **Administrative repository** — centralized audit archive for LFDT maintainers
+
+---
+
+## 🔌 Extensibility & Plugin Architecture
+
+New capabilities are added as **isolated event subscribers** — the core routing logic is never modified.
+
+```javascript
+// Adding a new capability — example: auto-milestone tracking
+// packages/core/src/automations/milestone-tracker/index.js
+
+module.exports = (app) => {
+  // Subscribe to the relevant event — isolated from all other modules
+  app.on('pull_request.labeled', async (context) => {
+    const config = await getConfig(context)
+    if (!config.milestone_tracking?.enabled) return
+
+    // Implementation isolated here — cannot affect /assign or /unassign
+    await handleMilestoneSync(context, config)
+  })
+}
+
+// Register in index.js — one line, zero changes to existing modules
+require('./automations/milestone-tracker')(app)
+```
+
+### Architectural Tradeoffs Considered
+
+| Alternative | Why Rejected |
+|---|---|
+| **Reusable Workflows** | `workflow_call` cannot auto-checkout shared scripts from a centralized repo; retains `pull_request_target` injection risk; no persistent state |
+| **Monolithic Probot Server** | Anti-pattern at Hiero's scale — no isolation between compute-heavy and lightweight tasks |
+| **GitMesh / OPA** | Excellent for AI governance; overkill for V2's deterministic compliance layer (DCO, GPG, assignment limits require 100% reliability first) |
+| **Hybrid App + Actions** ✅ | Centralized policy, isolated execution, lightweight server, leverages GitHub's native CI infrastructure |
+
+---
+
+## 📦 Rollout Strategy
+
+```mermaid
+graph LR
+    PRE["🔬 Pre-Mentorship\nPython SDK\n(Issue #2229)"]
+    M1["📦 Milestone 1\nAbstract → JS Action\n(hiero-hackers)"]
+    M4["🐤 Milestone 4\nCanary Rollout\n(hiero-sdk-cpp)"]
+    ORG["🌐 Org-Wide\nAll SDK repos\n(hiero-sdk-js, ...)"]
+
+    PRE -->|"Validates real\npain points"| M1
+    M1 -->|"Battle-tested\narchitecture"| M4
+    M4 -->|"30 days stable\n+ telemetry verified"| ORG
+
+    style PRE fill:#95a5a6,color:#fff
+    style M1 fill:#3498db,color:#fff
+    style M4 fill:#e67e22,color:#fff
+    style ORG fill:#27ae60,color:#fff
+```
+
+| Phase | Repository | Enforcement Mode | Success Gate |
+|---|---|---|---|
+| Pre-Mentorship | `hiero-sdk-python` | Active (Phase 1) | PR #2242 merged |
+| Milestone 1–2 | `hiero-hackers` sandbox | Warn-only → Active | Hybrid pipeline E2E passing |
+| Milestone 4 | `hiero-sdk-cpp` canary | Active | 30 days · zero dropped webhooks · zero blocked PRs |
+| Post-M4 | `hiero-sdk-js` and others | Active | Telemetry + maintainer sign-off |
+
+> **New repository integrations default to `warn-only` mode** — logs telemetry but performs zero state mutations until a maintainer explicitly enables active mode.
+
+---
+
+## 🎓 Learning Objectives
+
+This mentorship represents a deliberate transition from **MVP-grade** to **production-grade** infrastructure engineering.
+
+| Area | Specific Learning Goal |
+|---|---|
+| **Production Security** | Model threat vectors for webhook payloads and PR injection attacks the way experienced maintainers do |
+| **The Production Delta** | Understand the gap between "good enough for one PR" and "good enough for an entire organization's production environment" |
+| **Graceful Degradation** | Design systems where a crash never blocks repository operations |
+| **API Rate Management** | Master exponential backoff, concurrency limits, and rate-limit governors in high-traffic conditions |
+| **Transparent Auditability** | Architect systems where every automated decision is verifiable by human maintainers without digging through logs |
+| **Canary Rollout** | Gain hands-on experience safely distributing architectural changes across legacy repositories |
+
+### Communication Cadence
+
+| Channel | Frequency | Purpose |
+|---|---|---|
+| Discord | Daily | Rapid synchronization, blockers, quick questions |
+| GitHub Draft PRs | Continuous | Async visibility into development cycles |
+| Issue Comments | Per decision | Architecture decisions documented in-thread |
+| Email / Formal Report | End-of-milestone | Structured evaluation with recorded demos |
+| Bi-weekly sync | Every 2 weeks | Collaborative review with mentor |
+
+---
+
+## 🌍 Broader Vision
+
+This solution is explicitly designed for Hiero's immediate pain points — but the broader ambition is clear:
+
+> **A highly configurable, cryptographically secure, audit-logged workflow engine that could optionally serve the entire LF Decentralized Trust ecosystem.**
+
+This mentorship is not a finite three-month project. It is **the onboarding phase for long-term maintainership**. Post-program, I am committed to:
+
+- Maintaining the centralized workflow service actively
+- Preserving the `hiero-hackers` sandbox environment
+- Supporting broader LFDT integration as the organization scales
+- Documenting and mentoring future contributors on the architecture
+
+---
+
+## 👤 Author & Acknowledgements
+
+<div align="center">
+
+**Darshit Khandelwal**
+
+[![GitHub](https://img.shields.io/badge/GitHub-darshit2308-24292e?style=for-the-badge&logo=github)](https://github.com/darshit2308)
+[![Email](https://img.shields.io/badge/Email-darshit2308%40gmail.com-EA4335?style=for-the-badge&logo=gmail&logoColor=white)](mailto:darshit2308@gmail.com)
+[![Timezone](https://img.shields.io/badge/Timezone-IST%20(UTC%20%2B5%3A30)-0052CC?style=for-the-badge)](https://time.is/IST)
+
+*IIIT Gwalior · Available ~20–25 hrs/week · Full coding period*
+
+</div>
+
+**Applying for:** [Hiero: GitHub Workflow App — LFDT Mentorship Issue #73](https://github.com/hiero-ledger/hiero/issues/73)
+
+**Addressed to:** Sophie Bulloch (`exploreriii`) — LF Decentralized Trust
+
+---
+
+**Special thanks** to the Hiero maintainers and the LF Decentralized Trust community for the open discussions around Issue #73 that shaped this architectural proposal. The `hiero-sdk-cpp` codebase, in particular, provided the real-world constraints that grounded this design in practice over theory.
+
+---
+
+<div align="center">
+
+*Built for Hiero. Designed for the entire LFDT ecosystem.*
+
+[![LFDT](https://img.shields.io/badge/LF%20Decentralized%20Trust-Mentorship%202026-003087?style=for-the-badge&logo=linux-foundation&logoColor=white)](https://mentorship.lfx.linuxfoundation.org)
+
+</div>
