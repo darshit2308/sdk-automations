@@ -27831,13 +27831,876 @@ module.exports = {
 
 /***/ }),
 
+/***/ 3515:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+// packages/core/src/automations/assign/index.js
+//
+// Orchestrator for the /assign command.
+// Implements the full decision tree: already assigned? ready for dev?
+// skill level? assignment limit? prerequisites? Then assign + welcome.
+
+const {
+  buildWelcomeComment,
+  buildAlreadyAssignedComment,
+  buildNotReadyComment,
+  buildNoSkillLevelComment,
+  buildAssignmentLimitExceededComment,
+  buildPrerequisiteNotMetComment,
+} = __nccwpck_require__(2283);
+
+/**
+ * Handles the /assign command on an issue.
+ *
+ * @param {object} params
+ * @param {object} params.github - Octokit instance.
+ * @param {string} params.owner - Repository owner.
+ * @param {string} params.repo - Repository name.
+ * @param {object} params.issue - The issue payload object.
+ * @param {object} params.comment - The comment payload object (the /assign comment).
+ * @param {object} params.config - The hiero-automation config.
+ * @param {object} params.logger - Logger with .info() and .error() methods.
+ */
+async function runAssign({ github, owner, repo, issue, comment, config, logger = console }) {
+  const requester = comment.user.login;
+  const issueNumber = issue.number;
+  const issueLabels = (issue.labels || []).map(l => l.name);
+
+  // React with thumbs-up to acknowledge the command
+  await github.rest.reactions.createForIssueComment({
+    owner,
+    repo,
+    comment_id: comment.id,
+    content: '+1',
+  });
+
+  // 1. Check if already assigned
+  if (issue.assignees?.length > 0) {
+    const msg = buildAlreadyAssignedComment(requester, issue.assignees[0].login);
+    await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body: msg });
+    logger.info(`Issue #${issueNumber} already assigned to ${issue.assignees[0].login}`);
+    return { assigned: false, reason: 'already_assigned' };
+  }
+
+  // 2. Check "ready for dev" label
+  const readyLabel = config.labels?.status?.readyForDev || 'status: ready for dev';
+  if (!issueLabels.includes(readyLabel)) {
+    const msg = buildNotReadyComment(requester, config);
+    await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body: msg });
+    logger.info(`Issue #${issueNumber} not ready for dev`);
+    return { assigned: false, reason: 'not_ready' };
+  }
+
+  // 3. Check skill level label
+  const skillHierarchy = config.skillHierarchy || [];
+  const issueSkillLevel = skillHierarchy.find(level => issueLabels.includes(level));
+
+  if (!issueSkillLevel) {
+    const msg = buildNoSkillLevelComment(requester, config);
+    await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body: msg });
+    logger.info(`Issue #${issueNumber} missing skill level label`);
+    return { assigned: false, reason: 'no_skill_level' };
+  }
+
+  // 4. Check open assignment limit
+  const blockedLabel = config.labels?.status?.blocked || 'status: blocked';
+  const maxOpen = config.assignment?.maxOpenAssignments || 2;
+  const openSearchQuery = `repo:${owner}/${repo} is:issue is:open assignee:${requester} -label:"${blockedLabel}"`;
+  const openSearch = await github.rest.search.issuesAndPullRequests({ q: openSearchQuery });
+  const currentOpenAssignments = openSearch.data.total_count;
+
+  if (currentOpenAssignments >= maxOpen) {
+    const msg = buildAssignmentLimitExceededComment(requester, currentOpenAssignments, config);
+    await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body: msg });
+    logger.info(`User ${requester} at assignment limit (${currentOpenAssignments}/${maxOpen})`);
+    return { assigned: false, reason: 'limit_exceeded' };
+  }
+
+  // 5. Check skill prerequisites
+  const prereqs = config.skillPrerequisites || {};
+  const prereq = prereqs[issueSkillLevel];
+
+  if (prereq && prereq.requiredLabel && prereq.requiredCount > 0) {
+    const closedSearchQuery = `repo:${owner}/${repo} is:issue is:closed assignee:${requester} label:"${prereq.requiredLabel}"`;
+    const closedSearch = await github.rest.search.issuesAndPullRequests({ q: closedSearchQuery });
+    const completedCount = closedSearch.data.total_count;
+
+    if (completedCount < prereq.requiredCount) {
+      const msg = buildPrerequisiteNotMetComment(requester, issueSkillLevel, completedCount, config);
+      await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body: msg });
+      logger.info(`User ${requester} prereq not met for ${issueSkillLevel}: ${completedCount}/${prereq.requiredCount}`);
+      return { assigned: false, reason: 'prerequisite_not_met' };
+    }
+  }
+
+  // 6. All checks passed — assign the user
+  await github.rest.issues.addAssignees({
+    owner,
+    repo,
+    issue_number: issueNumber,
+    assignees: [requester],
+  });
+
+  const welcomeMsg = buildWelcomeComment(requester, issueSkillLevel, config);
+  await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body: welcomeMsg });
+
+  // Swap labels: remove "ready for dev", add "in progress"
+  const inProgressLabel = config.labels?.status?.inProgress || 'status: in progress';
+  try {
+    await github.rest.issues.removeLabel({ owner, repo, issue_number: issueNumber, name: readyLabel });
+  } catch {
+    // label may have already been removed — safe to ignore
+  }
+  await github.rest.issues.addLabels({ owner, repo, issue_number: issueNumber, labels: [inProgressLabel] });
+
+  logger.info(`Assigned ${requester} to issue #${issueNumber} (skill: ${issueSkillLevel})`);
+  return { assigned: true, reason: null };
+}
+
+module.exports = { runAssign };
+
+
+/***/ }),
+
+/***/ 2283:
+/***/ ((module) => {
+
+// packages/core/src/automations/assign/messages.js
+//
+// Pure functions for building /assign command response comments.
+// All policy values come from the config object — nothing is hardcoded.
+
+/**
+ * Builds a welcome comment for a newly assigned contributor.
+ */
+function buildWelcomeComment(username, skillLevel, config) {
+  const skillHierarchy = config.skillHierarchy || [];
+  const prereqs = config.skillPrerequisites || {};
+  const goodFirstIssueLabel = skillHierarchy[0] || '';
+  const isGoodFirstIssue = skillLevel === goodFirstIssueLabel;
+  const displayName = prereqs[skillLevel]?.displayName || 'issue';
+
+  if (isGoodFirstIssue) {
+    return [
+      `👋 Hi @${username}, welcome to the Hiero community! Thank you for choosing to contribute — we're thrilled to have you here! 🎉`,
+      '',
+      `You've been assigned this **Good First Issue**, and the **Good First Issue Support Team** is ready to help you succeed.`,
+      '',
+      'The issue description above has everything you need. If anything is unclear, just ask.',
+      '',
+      'Good luck, and welcome aboard! 🚀',
+    ].join('\n');
+  }
+
+  return `👋 Hi @${username}, thanks for continuing to contribute! You've been assigned this **${displayName}** issue. 🙌\n\nGood luck! 🚀`;
+}
+
+/**
+ * Builds a comment for when the issue is already assigned.
+ */
+function buildAlreadyAssignedComment(requesterUsername, currentAssignee) {
+  if (requesterUsername.toLowerCase() === currentAssignee.toLowerCase()) {
+    return `👋 Hi @${requesterUsername}! You're already assigned to this issue. You're all set to start working on it!`;
+  }
+  return `👋 Hi @${requesterUsername}! This issue is already assigned to @${currentAssignee}. Find another open issue and comment \`/assign\` to get started!`;
+}
+
+/**
+ * Builds a comment for when the issue is not ready for development.
+ */
+function buildNotReadyComment(requesterUsername, config) {
+  const readyLabel = config.labels?.status?.readyForDev || 'status: ready for dev';
+  return `👋 Hi @${requesterUsername}! This issue is not ready for development yet.\n\nIssues must have the \`${readyLabel}\` label before they can be assigned.`;
+}
+
+/**
+ * Builds a comment for when the issue has no skill level label.
+ */
+function buildNoSkillLevelComment(requesterUsername, config) {
+  const maintainerTeam = config.maintainerTeam || '';
+  return `👋 Hi @${requesterUsername}! This issue doesn't have a skill level label yet.\n\n${maintainerTeam} — could you please add a skill level label? Once added, @${requesterUsername} can comment \`/assign\` again.`;
+}
+
+/**
+ * Builds a comment for when the requester has too many open assignments.
+ */
+function buildAssignmentLimitExceededComment(requesterUsername, openCount, config) {
+  const maxOpen = config.assignment?.maxOpenAssignments || 2;
+  return [
+    `👋 Hi @${requesterUsername}! Thanks for your enthusiasm!`,
+    '',
+    `To help contributors stay focused, we limit assignments to **${maxOpen} open issues** at a time.`,
+    '',
+    `📊 **Your Current Assignments:** You're currently assigned to **${openCount}** open issues. Once you complete one, come back and we'll be happy to assign this to you! 🎯`,
+  ].join('\n');
+}
+
+/**
+ * Builds a comment for when the requester hasn't met the skill prerequisites.
+ */
+function buildPrerequisiteNotMetComment(requesterUsername, skillLevel, completedCount, config) {
+  const prereqs = config.skillPrerequisites || {};
+  const prereq = prereqs[skillLevel] || {};
+  const displayName = prereq.displayName || 'this level';
+  const requiredCount = prereq.requiredCount || 0;
+  const prerequisiteDisplayName = prereq.prerequisiteDisplayName || 'prerequisite issues';
+
+  return [
+    `👋 Hi @${requesterUsername}! This is a **${displayName}** issue.`,
+    '',
+    `Before taking it on, you need to complete at least **${requiredCount} ${prerequisiteDisplayName}**.`,
+    '',
+    `📊 **Your Progress:** You've completed **${completedCount}** so far. Keep going! 🎯`,
+  ].join('\n');
+}
+
+module.exports = {
+  buildWelcomeComment,
+  buildAlreadyAssignedComment,
+  buildNotReadyComment,
+  buildNoSkillLevelComment,
+  buildAssignmentLimitExceededComment,
+  buildPrerequisiteNotMetComment,
+};
+
+
+/***/ }),
+
+/***/ 4493:
+/***/ ((module) => {
+
+// packages/core/src/automations/pr-checks/checks.js
+//
+// Pure functions for PR quality checks.
+// These have NO GitHub API dependencies — they operate on data passed in.
+
+/**
+ * Returns true if a commit message contains a valid DCO sign-off line.
+ */
+function hasDCOSignoff(message) {
+  if (!message) return false;
+  return /^Signed-off-by:\s+.+\s+<.+>/mi.test(message);
+}
+
+/**
+ * Returns true if a commit has a verified GPG signature.
+ */
+function hasVerifiedGPGSignature(commit) {
+  return commit?.commit?.verification?.verified === true;
+}
+
+/**
+ * Returns true if a commit is a merge commit (has more than one parent).
+ */
+function isMergeCommit(commit) {
+  return Array.isArray(commit?.parents) && commit.parents.length > 1;
+}
+
+/**
+ * Checks all commits for DCO sign-off compliance.
+ * Merge commits are skipped.
+ *
+ * @param {Array} commits - Array of commit objects from the GitHub API.
+ * @param {object} logger - Logger with .info() method.
+ * @returns {{ passed: boolean, failures: Array<{ sha: string, message: string }> }}
+ */
+function checkDCO(commits, logger) {
+  const failures = [];
+  let skipped = 0;
+
+  for (const c of commits) {
+    if (isMergeCommit(c)) {
+      skipped++;
+      continue;
+    }
+    const message = c.commit?.message || '';
+    const shortSha = (c.sha || '').slice(0, 7);
+    const firstLine = message.split('\n')[0] || '(no message)';
+
+    if (!hasDCOSignoff(message)) {
+      failures.push({ sha: shortSha, message: firstLine });
+    }
+  }
+
+  const checked = commits.length - skipped;
+  logger.info(`DCO check: ${checked - failures.length}/${checked} passed (${skipped} merge commit(s) skipped)`);
+  return { passed: failures.length === 0, failures };
+}
+
+/**
+ * Checks all commits for verified GPG signatures.
+ *
+ * @param {Array} commits - Array of commit objects from the GitHub API.
+ * @param {object} logger - Logger with .info() method.
+ * @returns {{ passed: boolean, failures: Array<{ sha: string, message: string }> }}
+ */
+function checkGPG(commits, logger) {
+  const failures = [];
+
+  for (const c of commits) {
+    const shortSha = (c.sha || '').slice(0, 7);
+    const message = c.commit?.message || '';
+    const firstLine = message.split('\n')[0] || '(no message)';
+
+    if (!hasVerifiedGPGSignature(c)) {
+      failures.push({ sha: shortSha, message: firstLine });
+    }
+  }
+
+  logger.info(`GPG check: ${commits.length - failures.length}/${commits.length} passed`);
+  return { passed: failures.length === 0, failures };
+}
+
+/**
+ * Parses issue numbers from a PR body using closing keywords and "related to" patterns.
+ *
+ * @param {string} body - The PR body text.
+ * @returns {Set<number>} Set of parsed issue numbers.
+ */
+function parseIssueNumbers(body) {
+  if (!body) return new Set();
+
+  const numbers = new Set();
+  const patterns = [
+    /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi,
+    /related\s+to\s+#(\d+)/gi,
+  ];
+
+  for (const regex of patterns) {
+    let match;
+    while ((match = regex.exec(body)) !== null) {
+      numbers.add(parseInt(match[1], 10));
+    }
+  }
+  return numbers;
+}
+
+module.exports = {
+  hasDCOSignoff,
+  hasVerifiedGPGSignature,
+  isMergeCommit,
+  checkDCO,
+  checkGPG,
+  parseIssueNumbers,
+};
+
+
+/***/ }),
+
+/***/ 7958:
+/***/ ((module) => {
+
+// packages/core/src/automations/pr-checks/comments.js
+//
+// Pure functions for building the PR dashboard comment.
+// All policy values (URLs, team names) come from the config object.
+
+const MARKER = '<!-- bot:pr-helper -->';
+
+/**
+ * Determines check state: 'error', 'pass', or 'fail'.
+ */
+function checkState(result) {
+  if (result.error) return 'error';
+  return result.passed ? 'pass' : 'fail';
+}
+
+/**
+ * Builds a generic section for a passing or errored check.
+ * Returns null if the check failed (caller handles fail case).
+ */
+function buildSection({ title, result, passMessage, maintainerTeam }) {
+  const state = checkState(result);
+
+  if (state === 'error') {
+    return [
+      `:warning: **${title}** -- This check encountered an internal error. ${maintainerTeam} please review manually.`,
+      '',
+      `Error: ${result.errorMessage || 'Unknown error'}`,
+    ].join('\n');
+  }
+  if (state === 'pass') {
+    return `:white_check_mark: **${title}** -- ${passMessage}`;
+  }
+  return null;
+}
+
+function buildDCOSection(dco, config) {
+  const maintainerTeam = config.maintainerTeam || '';
+  const signingGuide = config.documentation?.signingGuide || '';
+  const guideLink = signingGuide ? ` See the [Signing Guide](${signingGuide}).` : '';
+
+  const common = buildSection({
+    title: 'DCO Sign-off',
+    result: dco,
+    passMessage: 'All commits have valid sign-offs. Nice work!',
+    maintainerTeam,
+  });
+  if (common) return common;
+
+  const failList = (dco.failures || []).map(f => `- \`${f.sha}\` ${f.message}`).join('\n');
+  return [
+    ':x: **DCO Sign-off** -- Uh oh! The following commits are missing the required DCO sign-off:',
+    failList,
+    '',
+    `No worries, this is an easy fix! Add \`Signed-off-by: Your Name <email>\` to each commit (e.g. \`git commit -s\`).${guideLink}`,
+  ].join('\n');
+}
+
+function buildGPGSection(gpg, config) {
+  const maintainerTeam = config.maintainerTeam || '';
+  const signingGuide = config.documentation?.signingGuide || '';
+  const guideLink = signingGuide ? ` See the [Signing Guide](${signingGuide}) for a step-by-step walkthrough.` : '';
+
+  const common = buildSection({
+    title: 'GPG Signature',
+    result: gpg,
+    passMessage: 'All commits have verified GPG signatures. Locked and loaded!',
+    maintainerTeam,
+  });
+  if (common) return common;
+
+  const failList = (gpg.failures || []).map(f => `- \`${f.sha}\` ${f.message}`).join('\n');
+  return [
+    ':x: **GPG Signature** -- Heads up! The following commits don\'t have a verified GPG signature:',
+    failList,
+    '',
+    `You'll need to sign your commits with GPG (e.g. \`git commit -S\`).${guideLink}`,
+  ].join('\n');
+}
+
+function buildMergeSection(merge, config) {
+  const maintainerTeam = config.maintainerTeam || '';
+  const mergeGuide = config.documentation?.mergeConflictsGuide || '';
+  const guideLink = mergeGuide ? ` See the [Merge Conflicts Guide](${mergeGuide}) if you need a hand.` : '';
+
+  const common = buildSection({
+    title: 'Merge Conflicts',
+    result: merge,
+    passMessage: 'No merge conflicts detected. Smooth sailing!',
+    maintainerTeam,
+  });
+  if (common) return common;
+
+  return [
+    ':x: **Merge Conflicts** -- Oh no, this PR has merge conflicts with the base branch.',
+    '',
+    `Let's get this sorted! Update your branch (e.g. rebase or merge from base) and push.${guideLink}`,
+  ].join('\n');
+}
+
+function buildIssueLinkSection(issueLink, config) {
+  const maintainerTeam = config.maintainerTeam || '';
+  const linked = (issueLink.issues || []).filter(i => i.isAssigned).map(i => `#${i.number}`).join(', ');
+
+  const common = buildSection({
+    title: 'Issue Link',
+    result: issueLink,
+    passMessage: `Linked to ${linked} (assigned to you).`,
+    maintainerTeam,
+  });
+  if (common) return common;
+
+  if (issueLink.reason === 'not_assigned') {
+    const unassigned = (issueLink.issues || []).filter(i => !i.isAssigned).map(i => `#${i.number}`).join(', ');
+    return [
+      `:x: **Issue Link** -- Almost there! You are not assigned to the following linked issues: ${unassigned}.`,
+      '',
+      'Please ensure you are assigned to all linked issues before opening a PR. You can comment `/assign` on the issue to grab it!',
+    ].join('\n');
+  }
+
+  return [
+    ':x: **Issue Link** -- This PR is not linked to any issue.',
+    '',
+    'Please reference an issue using a closing keyword (e.g. `Fixes #123`) and ensure the issue is assigned to you. Every PR needs a home!',
+  ].join('\n');
+}
+
+/**
+ * Returns true if all four checks passed without errors.
+ */
+function allChecksPassed({ dco, gpg, merge, issueLink }) {
+  return (
+    !dco.error && dco.passed &&
+    !gpg.error && gpg.passed &&
+    !merge.error && merge.passed &&
+    !issueLink.error && issueLink.passed
+  );
+}
+
+/**
+ * Builds the full PR dashboard comment body.
+ *
+ * @param {object} params
+ * @param {string} params.prAuthor - PR author's GitHub login.
+ * @param {object} params.dco - DCO check result.
+ * @param {object} params.gpg - GPG check result.
+ * @param {object} params.merge - Merge conflict check result.
+ * @param {object} params.issueLink - Issue link check result.
+ * @param {object} params.config - The hiero-automation config object.
+ * @returns {{ marker: string, body: string, allPassed: boolean }}
+ */
+function buildBotComment({ prAuthor, dco, gpg, merge, issueLink, config }) {
+  const greeting = [
+    `Hey @${prAuthor} :wave: thanks for the PR!`,
+    "I'm your friendly **PR Helper Bot** :robot: and I'll be riding shotgun on this one, keeping track of your PR's status to help you get it approved and merged.",
+    '',
+    "This comment updates automatically as you push changes -- think of it as your PR's live scoreboard!",
+    "Here's the latest:",
+  ].join('\n');
+
+  const checksSection = [
+    '### PR Checks', '',
+    buildDCOSection(dco, config), '', '---', '',
+    buildGPGSection(gpg, config), '', '---', '',
+    buildMergeSection(merge, config), '', '---', '',
+    buildIssueLinkSection(issueLink, config),
+  ].join('\n');
+
+  const passed = allChecksPassed({ dco, gpg, merge, issueLink });
+
+  const footer = passed
+    ? ':tada: *All checks passed! Your PR is ready for review. Great job!*'
+    : ':hourglass_flowing_sand: *All checks must pass before this PR can be reviewed. You\'ve got this!*';
+
+  const body = [MARKER, greeting, '', '---', '', checksSection, '', '---', '', footer].join('\n');
+  return { marker: MARKER, body, allPassed: passed };
+}
+
+module.exports = {
+  MARKER,
+  checkState,
+  buildSection,
+  buildDCOSection,
+  buildGPGSection,
+  buildMergeSection,
+  buildIssueLinkSection,
+  allChecksPassed,
+  buildBotComment,
+};
+
+
+/***/ }),
+
+/***/ 7634:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+// packages/core/src/automations/pr-checks/index.js
+//
+// Orchestrator for PR quality checks.
+// Receives a plain Octokit instance — works with both GitHub Actions and Probot.
+
+const { checkDCO, checkGPG, parseIssueNumbers } = __nccwpck_require__(4493);
+const { buildBotComment, MARKER } = __nccwpck_require__(7958);
+
+/**
+ * Fetches all commits for a pull request (paginated).
+ */
+async function fetchPRCommits(github, owner, repo, pullNumber) {
+  const commits = [];
+  let page = 1;
+  const perPage = 100;
+
+  while (true) {
+    const response = await github.rest.pulls.listCommits({
+      owner,
+      repo,
+      pull_number: pullNumber,
+      per_page: perPage,
+      page,
+    });
+    commits.push(...response.data);
+    if (response.data.length < perPage) break;
+    page++;
+  }
+  return commits;
+}
+
+/**
+ * Checks whether the PR has merge conflicts by polling the mergeable state.
+ * GitHub sometimes takes a moment to compute mergeability, so we retry.
+ */
+async function checkMergeConflict(github, owner, repo, pullNumber, logger) {
+  const maxAttempts = 5;
+  const delayMs = 2000;
+  let conflicts = false;
+  let mergeableResolved = false;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const { data: pr } = await github.rest.pulls.get({
+      owner,
+      repo,
+      pull_number: pullNumber,
+    });
+
+    if (pr.mergeable !== null) {
+      logger.info(`Merge conflict check: mergeable=${pr.mergeable}, state=${pr.mergeable_state}`);
+      conflicts = !pr.mergeable;
+      mergeableResolved = true;
+      break;
+    }
+
+    if (attempt < maxAttempts) {
+      logger.info(`Mergeable state not ready, waiting ${delayMs}ms (attempt ${attempt}/${maxAttempts})`);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+
+  if (!mergeableResolved) {
+    logger.info('Merge conflict check: mergeable never resolved after retries, assuming no conflicts');
+  }
+  return { passed: !conflicts };
+}
+
+/**
+ * Uses the GraphQL API to fetch closing issue references for a PR.
+ */
+async function fetchClosingIssueNumbers(github, owner, repo, pullNumber, logger) {
+  try {
+    const query = `query($owner:String!,$repo:String!,$number:Int!){
+      repository(owner:$owner,name:$repo){
+        pullRequest(number:$number){
+          closingIssuesReferences(first:10){
+            nodes { number }
+          }
+        }
+      }
+    }`;
+    const result = await github.graphql(query, { owner, repo, number: pullNumber });
+    const nodes = result.repository.pullRequest.closingIssuesReferences.nodes || [];
+    return nodes.map(n => n.number);
+  } catch (error) {
+    logger.info(`GraphQL closingIssuesReferences failed: ${error.message}`);
+    return [];
+  }
+}
+
+/**
+ * Checks whether the PR is linked to an issue and whether the PR author
+ * is assigned to that issue.
+ */
+async function checkIssueLink(github, owner, repo, pullRequest, logger) {
+  const body = pullRequest.body || '';
+  const prAuthor = pullRequest.user?.login;
+  const pullNumber = pullRequest.number;
+
+  const issueNumbers = parseIssueNumbers(body);
+
+  // If no issue numbers found in the body, try the GraphQL API
+  if (issueNumbers.size === 0) {
+    const graphqlIssues = await fetchClosingIssueNumbers(github, owner, repo, pullNumber, logger);
+    graphqlIssues.forEach(n => issueNumbers.add(n));
+  }
+
+  if (issueNumbers.size === 0) {
+    logger.info('Issue link check: no linked issues found');
+    return { passed: false, reason: 'no_issue_linked', issues: [] };
+  }
+
+  // Fetch each linked issue and check if the PR author is assigned
+  const linkedIssues = [];
+  for (const num of issueNumbers) {
+    try {
+      const { data: issue } = await github.rest.issues.get({
+        owner,
+        repo,
+        issue_number: num,
+      });
+      const isAssigned = (issue.assignees || []).some(
+        a => a.login.toLowerCase() === prAuthor.toLowerCase()
+      );
+      linkedIssues.push({ number: num, title: issue.title, isAssigned });
+    } catch (err) {
+      logger.info(`Issue link check: could not fetch issue #${num}: ${err.message}`);
+    }
+  }
+
+  if (linkedIssues.length === 0) {
+    logger.info('Issue link check: all linked issues returned errors');
+    return { passed: false, reason: 'no_issue_linked', issues: [] };
+  }
+
+  const allAssigned = linkedIssues.every(i => i.isAssigned);
+  if (!allAssigned) {
+    const missing = linkedIssues.filter(i => !i.isAssigned).map(i => `#${i.number}`).join(', ');
+    logger.info(`Issue link check: author ${prAuthor} not assigned to all linked issues (missing: ${missing})`);
+    return { passed: false, reason: 'not_assigned', issues: linkedIssues };
+  }
+
+  logger.info('Issue link check: passed (author assigned to all linked issues)');
+  return { passed: true, reason: null, issues: linkedIssues };
+}
+
+/**
+ * Posts a new comment or updates an existing one identified by the marker.
+ */
+async function postOrUpdateComment(github, owner, repo, issueNumber, marker, body) {
+  let existingCommentId = null;
+  let page = 1;
+  const perPage = 100;
+
+  while (!existingCommentId) {
+    const { data: comments } = await github.rest.issues.listComments({
+      owner,
+      repo,
+      issue_number: issueNumber,
+      per_page: perPage,
+      page,
+    });
+
+    for (const c of comments) {
+      if (c.body && c.body.startsWith(marker)) {
+        existingCommentId = c.id;
+        break;
+      }
+    }
+    if (comments.length < perPage) break;
+    page++;
+  }
+
+  if (existingCommentId) {
+    await github.rest.issues.updateComment({
+      owner,
+      repo,
+      comment_id: existingCommentId,
+      body,
+    });
+  } else {
+    await github.rest.issues.createComment({
+      owner,
+      repo,
+      issue_number: issueNumber,
+      body,
+    });
+  }
+}
+
+/**
+ * Checks if a PR has a specific label.
+ */
+function hasLabel(prPayload, labelName) {
+  if (!prPayload?.labels?.length) return false;
+  return prPayload.labels.some(label => {
+    const name = typeof label === 'string' ? label : label?.name;
+    return typeof name === 'string' && name.toLowerCase() === labelName.toLowerCase();
+  });
+}
+
+/**
+ * Swaps status labels (needs-review / needs-revision) based on check results.
+ */
+async function swapStatusLabel(github, owner, repo, pullRequest, allPassed, force, config) {
+  const statusLabels = config.labels?.status || {};
+  const needsReview = statusLabels.needsReview || 'status: needs review';
+  const needsRevision = statusLabels.needsRevision || 'status: needs revision';
+
+  const labelToAdd = allPassed ? needsReview : needsRevision;
+  const labelToRemove = allPassed ? needsRevision : needsReview;
+
+  if (force) {
+    if (hasLabel(pullRequest, labelToRemove)) {
+      try {
+        await github.rest.issues.removeLabel({ owner, repo, issue_number: pullRequest.number, name: labelToRemove });
+      } catch { /* label may not exist */ }
+    }
+    await github.rest.issues.addLabels({ owner, repo, issue_number: pullRequest.number, labels: [labelToAdd] });
+  } else {
+    if (hasLabel(pullRequest, labelToRemove)) {
+      try {
+        await github.rest.issues.removeLabel({ owner, repo, issue_number: pullRequest.number, name: labelToRemove });
+      } catch { /* label may not exist */ }
+      await github.rest.issues.addLabels({ owner, repo, issue_number: pullRequest.number, labels: [labelToAdd] });
+    }
+  }
+}
+
+/**
+ * Main orchestrator: runs all PR checks, posts the dashboard comment,
+ * and swaps status labels.
+ *
+ * @param {object} params
+ * @param {object} params.github - Octokit instance.
+ * @param {string} params.owner - Repository owner.
+ * @param {string} params.repo - Repository name.
+ * @param {object} params.pullRequest - The pull_request payload object.
+ * @param {object} params.config - The hiero-automation config.
+ * @param {boolean} params.force - Whether to force label swap (true on PR open).
+ * @param {object} params.logger - Logger with .info() and .error() methods.
+ * @returns {{ allPassed: boolean }}
+ */
+async function runPRChecks({ github, owner, repo, pullRequest, config, force = false, logger = console }) {
+  const pullNumber = pullRequest.number;
+  const prAuthor = pullRequest.user.login;
+
+  let dco, gpg, merge, issueLink;
+  let commits = [];
+
+  // Fetch commits
+  try {
+    commits = await fetchPRCommits(github, owner, repo, pullNumber);
+    logger.info(`Fetched ${commits.length} commits for PR #${pullNumber}`);
+  } catch (e) {
+    logger.error(`Failed to fetch PR commits: ${e.message}`);
+    dco = { error: true, errorMessage: e.message };
+    gpg = { error: true, errorMessage: e.message };
+  }
+
+  // Run DCO check
+  if (!dco) {
+    try { dco = checkDCO(commits, logger); }
+    catch (e) { dco = { error: true, errorMessage: e.message }; }
+  }
+
+  // Run GPG check
+  if (!gpg) {
+    try { gpg = checkGPG(commits, logger); }
+    catch (e) { gpg = { error: true, errorMessage: e.message }; }
+  }
+
+  // Run merge conflict check
+  try { merge = await checkMergeConflict(github, owner, repo, pullNumber, logger); }
+  catch (e) { merge = { error: true, errorMessage: e.message }; }
+
+  // Run issue link check
+  try { issueLink = await checkIssueLink(github, owner, repo, pullRequest, logger); }
+  catch (e) { issueLink = { error: true, errorMessage: e.message }; }
+
+  // Build and post the dashboard comment
+  const { marker, body, allPassed } = buildBotComment({ prAuthor, dco, gpg, merge, issueLink, config });
+  await postOrUpdateComment(github, owner, repo, pullNumber, marker, body);
+
+  // Swap status labels
+  await swapStatusLabel(github, owner, repo, pullRequest, allPassed, force, config);
+
+  return { allPassed };
+}
+
+module.exports = {
+  runPRChecks,
+  fetchPRCommits,
+  checkMergeConflict,
+  checkIssueLink,
+  fetchClosingIssueNumbers,
+  postOrUpdateComment,
+  hasLabel,
+  swapStatusLabel,
+};
+
+
+/***/ }),
+
 /***/ 9158:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 const { runReviewSync } = __nccwpck_require__(8666);
+const { runPRChecks } = __nccwpck_require__(7634);
+const { runAssign } = __nccwpck_require__(3515);
 
 const automations = {
   'review-sync': runReviewSync,
+  'pr-checks': runPRChecks,
+  'assign': runAssign,
 };
 
 function getAutomation(name) {
@@ -28566,7 +29429,8 @@ function validateReviewSyncConfig(config) {
 }
 
 function validateConfig(config, automation) {
-  if (automation === 'review-sync') return validateReviewSyncConfig(config);
+  const supported = ['review-sync', 'pr-checks', 'assign'];
+  if (supported.includes(automation)) return validateReviewSyncConfig(config);
   throw new Error(`Unsupported automation for validation: ${automation}`);
 }
 
@@ -28582,6 +29446,8 @@ const { loadConfig } = __nccwpck_require__(1092);
 const { validateConfig } = __nccwpck_require__(8218);
 const { runAutomation, getAutomation } = __nccwpck_require__(9158);
 const reviewSync = __nccwpck_require__(8666);
+const prChecks = __nccwpck_require__(7634);
+const assign = __nccwpck_require__(3515);
 
 module.exports = {
   loadConfig,
@@ -28589,6 +29455,8 @@ module.exports = {
   runAutomation,
   getAutomation,
   reviewSync,
+  prChecks,
+  assign,
 };
 
 
