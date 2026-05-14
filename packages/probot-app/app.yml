@@ -1,0 +1,33 @@
+# This is a GitHub App Manifest. These settings are used when initially
+# configuring your GitHub App via Probot.
+#
+# Read more: https://probot.github.io/docs/development/#configuring-a-github-app
+
+# The list of events the GitHub App subscribes to.
+default_events:
+  - issue_comment
+  - pull_request
+
+# Permissions required by the app.
+# https://docs.github.com/en/rest/overview/permissions-required-for-github-apps
+default_permissions:
+  # Issues and related comments, assignees, labels, and milestones.
+  issues: write
+
+  # Pull requests and related comments, assignees, labels, milestones, and merges.
+  pull_requests: write
+
+  # Search repositories, list collaborators, and access repository metadata.
+  metadata: read
+
+  # Repository contents — needed to read the config file from the repo.
+  contents: read
+
+# The name of the GitHub App.
+# name: Hiero SDK Automations
+
+# A description of the GitHub App.
+# description: Shared PR quality checks, /assign command, and review-sync automation for Hiero SDK repositories.
+
+# Set to true when your GitHub App is available to the public.
+# public: true

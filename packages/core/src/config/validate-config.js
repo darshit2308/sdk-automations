@@ -174,7 +174,8 @@ function validateReviewSyncConfig(config) {
 }
 
 function validateConfig(config, automation) {
-  if (automation === 'review-sync') return validateReviewSyncConfig(config);
+  const supported = ['review-sync', 'pr-checks', 'assign'];
+  if (supported.includes(automation)) return validateReviewSyncConfig(config);
   throw new Error(`Unsupported automation for validation: ${automation}`);
 }
 

@@ -4,7 +4,12 @@
   "private": true,
   "main": "src/index.js",
   "scripts": {
-    "test": "node -e \"require('./src')\""
+    "start": "probot run ./src/index.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "probot": "^13.0.1",
+    "@hiero-sdk-automations/core": "*"
   },
   "engines": {
     "node": ">=20"

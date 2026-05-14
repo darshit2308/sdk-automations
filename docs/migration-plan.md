@@ -1,11 +1,31 @@
 # Migration Plan
 
-1. Establish this central repository structure, docs, examples, schema, and package boundaries.
-2. Pilot Python `review-sync` through a central JavaScript action in dry-run mode.
-3. Expand schema validation as more repo-owned policy moves into `.github/hiero-automation.*`.
-4. Compare C++ and Python assignment behavior without copying either script wholesale.
-5. Implement a shared assignment core that is config-driven and tested with mocked GitHub clients.
-6. Pilot one SDK repository before broader rollout, enabling mutations only after dry-run logs match expectations.
-7. Add a Probot/GitHub App adapter after the shared core interfaces are proven.
+This file is the short overview. The detailed strategy lives in:
 
-The C++ workflow structure should not be rewritten as part of the first central-repo PR. C++ issue work such as #1625, #1626, #1627, #1628, and #1629 should be considered as one cluster, with #1634 treated as related config groundwork.
+- [Phased Migration Plan](./phased-migration-plan.md)
+
+## Recommendation
+
+Use a phased migration instead of a broad workflow rewrite.
+
+1. Stabilize the central `sdk-automations` repo with official ownership, protected-branch governance, CI, releases, docs, schema validation, parity tests, and rollback guidance.
+2. Pilot Python `review-sync` through a central JavaScript action, starting with a manual dry-run workflow.
+3. Enable writes only after maintainers approve the exact behavior, final permissions, concurrency, rollback SLA, and automated parity results.
+4. Compare C++ and Python assignment behavior before extracting shared assignment logic.
+5. Keep C++ workflows unchanged until the #1627 investigation is accepted.
+6. Expand to other SDKs only after the Python pilot is stable.
+7. Add a Probot/GitHub App adapter later, reusing the same shared core logic.
+
+## Guardrails
+
+- Keep `step-security/harden-runner` visible in caller workflows.
+- Keep SDK workflow triggers, permissions, checkout, concurrency, artifacts, and repo config local.
+- Treat `.github/hiero-automation.*` as privileged policy and protect it with CODEOWNERS and protected-branch review.
+- Pin production action references to full-length commit SHAs, not tags or `@main`.
+- Start with dry-run, require automated parity before write mode, and keep rollback simple.
+
+Important note:
+
+> The `darshit2308/*` repositories used in the detailed plan are proof artifacts only. No upstream SDK should depend on a personal fork as the final production source.
+
+The key principle is: centralize reusable logic, not every workflow boundary.
