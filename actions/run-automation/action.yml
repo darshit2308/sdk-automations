@@ -2,7 +2,7 @@ name: Run Hiero SDK Automation
 description: Run a shared Hiero SDK automation from sdk-automations.
 inputs:
   automation:
-    description: Automation name to run. Currently supports review-sync.
+    description: Automation name to run. Supports assign, pr-checks, and review-sync.
     required: true
   config-path:
     description: Path to the caller repository automation config.

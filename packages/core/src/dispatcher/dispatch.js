@@ -3,8 +3,8 @@
 // Central dispatcher for sdk-automations.
 // Routes automation keys to the correct policy module and executes them.
 //
-// This module replaces packages/core/src/automations/registry.js with a
-// cleaner separation between routing and execution.
+// This module is the runtime handoff between normalized/routed events and
+// policy execution.
 
 const { runReviewSync } = require('../policies/review-sync/policy');
 const { runPRChecks } = require('../policies/pr-checks/policy');
@@ -47,6 +47,29 @@ async function runAutomation(name, options) {
   return getAutomation(name)(options);
 }
 
+function buildDispatchOptions({ automationKey, github, config, event, logger = console, dryRun }) {
+  const options = {
+    github,
+    config,
+    logger,
+    dryRun,
+    owner: event?.owner || config?.repository?.owner,
+    repo: event?.repo || config?.repository?.name,
+    issue: event?.issue || null,
+    pullRequest: event?.pullRequest || null,
+    comment: event?.comment || null,
+    event: event?.raw || null,
+  };
+
+  if (automationKey === 'pr-checks') {
+    options.force = event?.type === 'pull_request'
+      && (event?.action === 'opened' || event?.action === 'reopened');
+    options.autoAssignAuthor = options.force;
+  }
+
+  return options;
+}
+
 /**
  * Full dispatch pipeline: takes a normalized event and dispatches
  * to the correct policy.
@@ -62,24 +85,7 @@ async function runAutomation(name, options) {
  */
 async function dispatch({ automationKey, github, config, event, logger = console, dryRun }) {
   const policyFn = getAutomation(automationKey);
-
-  // Build the options object based on what the policy expects.
-  // Each policy has a different signature, so we pass a superset
-  // and let the policy destructure what it needs.
-  const options = {
-    github,
-    config,
-    logger,
-    dryRun,
-    owner: event?.owner || config?.repository?.owner,
-    repo: event?.repo || config?.repository?.name,
-    issue: event?.issue || null,
-    pullRequest: event?.pullRequest || null,
-    comment: event?.comment || null,
-    event: event?.raw || null,
-  };
-
-  return policyFn(options);
+  return policyFn(buildDispatchOptions({ automationKey, github, config, event, logger, dryRun }));
 }
 
-module.exports = { getAutomation, runAutomation, dispatch };
+module.exports = { getAutomation, runAutomation, buildDispatchOptions, dispatch };

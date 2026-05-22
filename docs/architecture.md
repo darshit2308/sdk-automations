@@ -48,10 +48,10 @@ The adapter (`packages/probot-app` or `packages/github-action-adapter`) listens 
 `dispatcher/dispatch.js` routes the automation key to the correct policy module and passes along the necessary context (config, GitHub client, event details).
 
 ### 5. Policies
-Business logic lives in `packages/core/src/policies/`. Policies are pure decision engines. They evaluate the event, check prerequisites, and determine what actions *should* happen. They produce an `OperationPlan`.
+Business logic lives in `packages/core/src/policies/`. Policies evaluate the event, check prerequisites, and decide what should happen. The long-term target is for all policies to produce an `OperationPlan`, but the current codebase is in transition: some policies still make direct GitHub API calls while newer logic and refactors use the operations layer.
 
 ### 6. Operations & Executor
-An `OperationPlan` is a pure data structure describing intended side effects (add label, assign user, post comment). The executor (`operations/executor.js`) carries out these plans using the injected GitHub client.
+An `OperationPlan` is a pure data structure describing intended side effects (add label, assign user, post comment). The executor (`operations/executor.js`) carries out these plans using the injected GitHub client. This layer exists today and is actively used for testability and future refactors, but it is not yet the sole execution path for every production policy.
 
 This separation enables:
 - **Testability:** Policies can be unit tested without mocking the GitHub API.

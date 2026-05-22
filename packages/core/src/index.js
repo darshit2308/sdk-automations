@@ -12,7 +12,7 @@ const { validateConfig } = require('./config/validate-config');
 // ── New architectural layers ────────────────────────────────────
 const { normalizeEvent, extractRepo, detectCommand } = require('./events/normalize');
 const { routeEvent, getSupportedAutomations } = require('./routing/route-event');
-const { dispatch, getAutomation, runAutomation } = require('./dispatcher/dispatch');
+const { dispatch, getAutomation, runAutomation, buildDispatchOptions } = require('./dispatcher/dispatch');
 
 // ── Policies ────────────────────────────────────────────────────
 const assign = require('./policies/assign/policy');
@@ -36,6 +36,7 @@ module.exports = {
   routeEvent,
   getSupportedAutomations,
   dispatch,
+  buildDispatchOptions,
 
   // Backward-compatible automation dispatch
   getAutomation,

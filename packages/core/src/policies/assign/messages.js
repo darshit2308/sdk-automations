@@ -1,4 +1,4 @@
-// packages/core/src/automations/assign/messages.js
+// packages/core/src/policies/assign/messages.js
 //
 // Pure functions for building /assign command response comments.
 // All policy values come from the config object — nothing is hardcoded.

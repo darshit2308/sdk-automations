@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { getAutomation, runAutomation, dispatch } = require('../src/dispatcher/dispatch');
+const { getAutomation, runAutomation, dispatch, buildDispatchOptions } = require('../src/dispatcher/dispatch');
 
 // ─── getAutomation ───────────────────────────────────────────────
 
@@ -76,4 +76,42 @@ test('dispatch passes options to policy function', async () => {
 
   assert.equal(result.assigned, false);
   assert.equal(result.reason, 'already_assigned');
+});
+
+test('buildDispatchOptions enables force + autoAssignAuthor for opened pull requests', () => {
+  const options = buildDispatchOptions({
+    automationKey: 'pr-checks',
+    github: {},
+    config: { repository: { owner: 'test', name: 'test' } },
+    event: {
+      type: 'pull_request',
+      action: 'opened',
+      owner: 'test',
+      repo: 'test',
+      pullRequest: { number: 1 },
+      raw: {},
+    },
+  });
+
+  assert.equal(options.force, true);
+  assert.equal(options.autoAssignAuthor, true);
+});
+
+test('buildDispatchOptions disables force for synchronized pull requests', () => {
+  const options = buildDispatchOptions({
+    automationKey: 'pr-checks',
+    github: {},
+    config: { repository: { owner: 'test', name: 'test' } },
+    event: {
+      type: 'pull_request',
+      action: 'synchronize',
+      owner: 'test',
+      repo: 'test',
+      pullRequest: { number: 1 },
+      raw: {},
+    },
+  });
+
+  assert.equal(options.force, false);
+  assert.equal(options.autoAssignAuthor, false);
 });

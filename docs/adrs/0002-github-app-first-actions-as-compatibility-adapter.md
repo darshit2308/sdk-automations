@@ -44,7 +44,7 @@ Key boundaries:
 
 - **Listener is adapter-specific.** Probot listens to webhooks; GitHub Actions reads event files. The shared core starts after the event is normalized.
 - **Policies live inside core**, not at the repo root. They are reusable business logic.
-- **Operations are explicit.** Policies produce operation plans; executors carry them out. This separation enables auditing, dry-run, and testability.
+- **Operations are explicit as the target execution model.** The operation-plan and executor layers are part of the shared core and are being adopted incrementally; some current policies still perform direct GitHub API calls while the migration finishes. This separation enables auditing, dry-run, and testability.
 
 ### What stays
 

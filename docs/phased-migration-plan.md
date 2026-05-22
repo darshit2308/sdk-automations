@@ -4,6 +4,10 @@ Last updated: 2026-05-13
 
 Status: strategy draft for maintainer review
 
+Current-repo note:
+
+> This document captures the earlier actions-first proof and rollout strategy used for the LFDT investigation phase. The current repository architecture has since moved to **GitHub App first, GitHub Actions compatibility second**; see [Architecture](./architecture.md), [Migration Plan](./migration-plan.md), and [ADR 0002](./adrs/0002-github-app-first-actions-as-compatibility-adapter.md) for the current direction.
+
 Related work:
 
 - LFDT mentorship project: https://github.com/LF-Decentralized-Trust-Mentorships/mentorship-program/issues/73

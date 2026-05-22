@@ -74,6 +74,7 @@ test('issue_comment handler ignores PR comments', async () => {
   // Should not throw — just silently return
   await handler({
     payload: {
+      action: 'created',
       issue: { pull_request: { url: 'https://...' } },
       comment: { body: '/assign', user: { login: 'alice', type: 'User' } },
     },
@@ -90,12 +91,13 @@ test('issue_comment handler ignores bot comments', async () => {
   const handler = app.handlers['issue_comment.created'][0];
   await handler({
     payload: {
+      action: 'created',
       issue: { number: 1 },
       comment: { body: '/assign', user: { login: 'bot', type: 'Bot' } },
     },
   });
 
-  assert.ok(!app.logLines.some(l => l.includes('Detected /assign')));
+  assert.ok(!app.logLines.some(l => l.includes('Routed issue_comment to automation "assign"')));
 });
 
 test('issue_comment handler ignores non-assign commands', async () => {
@@ -105,25 +107,27 @@ test('issue_comment handler ignores non-assign commands', async () => {
   const handler = app.handlers['issue_comment.created'][0];
   await handler({
     payload: {
+      action: 'created',
       issue: { number: 1 },
       comment: { body: 'Hello world!', user: { login: 'alice', type: 'User' } },
     },
   });
 
-  assert.ok(!app.logLines.some(l => l.includes('Detected /assign')));
+  assert.ok(!app.logLines.some(l => l.includes('Routed issue_comment to automation "assign"')));
 });
 
-test('issue_comment handler detects /assign command', async () => {
+test('issue_comment handler routes /assign command', async () => {
   const app = createMockApp();
   registerProbotApp(app);
 
   const handler = app.handlers['issue_comment.created'][0];
 
   // This will fail at the config-loading step (no real octokit),
-  // but it should at least log that it detected the command first.
+  // but it should still route through the shared pipeline first.
   try {
     await handler({
       payload: {
+        action: 'created',
         issue: { number: 1, labels: [], assignees: [] },
         comment: { id: 100, body: '/assign', user: { login: 'alice', type: 'User' } },
         repository: { owner: { login: 'test' }, name: 'test' },
@@ -152,8 +156,8 @@ test('issue_comment handler detects /assign command', async () => {
   }
 
   assert.ok(
-    app.logLines.some(l => l.includes('Detected /assign command from: alice')),
-    'should log /assign detection'
+    app.logLines.some(l => l.includes('Routed issue_comment to automation "assign"')),
+    'should log that /assign was routed through the shared core'
   );
 });
 
@@ -166,6 +170,7 @@ test('pull_request.opened handler skips bot PRs', async () => {
   const handler = app.handlers['pull_request.opened'][0];
   await handler({
     payload: {
+      action: 'opened',
       pull_request: {
         number: 1,
         html_url: 'https://github.com/test/test/pull/1',
@@ -204,8 +209,6 @@ test('pull_request.edited handler skips non-body edits', async () => {
 
 // ─── Deep Integration tests ────────────────────────────────────────
 
-const { parseConfig } = require('@hiero-sdk-automations/core');
-
 test('issue_comment handler fails closed when config is missing', async () => {
   const app = createMockApp();
   registerProbotApp(app);
@@ -214,6 +217,7 @@ test('issue_comment handler fails closed when config is missing', async () => {
 
   await handler({
     payload: {
+      action: 'created',
       issue: { number: 1, labels: [], assignees: [] },
       comment: { id: 100, body: '/assign', user: { login: 'alice', type: 'User' } },
       repository: { owner: { login: 'test' }, name: 'test' },
@@ -232,7 +236,7 @@ test('issue_comment handler fails closed when config is missing', async () => {
   });
 
   assert.ok(
-    app.logLines.some(l => l.includes('ERROR: Error handling /assign: No hiero-automation config file found')),
+    app.logLines.some(l => l.includes('ERROR: Error handling issue_comment (assign): No hiero-automation config file found')),
     'should fail closed and log the missing config error'
   );
 });
@@ -261,6 +265,7 @@ labels:
 
   await handler({
     payload: {
+      action: 'created',
       issue: { number: 1, labels: [], assignees: [{ login: 'alice' }] }, // Already assigned -> runAssign will post a comment
       comment: { id: 100, body: '/assign', user: { login: 'alice', type: 'User' } },
       repository: { owner: { login: 'test' }, name: 'test' },
@@ -295,6 +300,56 @@ labels:
     'should log successful config load'
   );
 
-
   assert.equal(commentCreated, true, 'runAssign should have been executed and created a comment');
+});
+
+test('issue_comment handler routes assign through the shared pipeline', async () => {
+  const app = createMockApp();
+  registerProbotApp(app);
+
+  const handler = app.handlers['issue_comment.created'][0];
+
+  await handler({
+    payload: {
+      action: 'created',
+      issue: { number: 1, labels: [], assignees: [{ login: 'alice' }] },
+      comment: { id: 100, body: '/assign', user: { login: 'alice', type: 'User' } },
+      repository: { owner: { login: 'test' }, name: 'test' },
+    },
+    octokit: {
+      repos: {
+        getContent: async ({ path }) => {
+          if (path.endsWith('.json')) {
+            const err = new Error('Not found');
+            err.status = 404;
+            throw err;
+          }
+          return {
+            data: { content: Buffer.from(`
+repository:
+  owner: test
+  name: test
+labels:
+  reviewQueue:
+    juniorCommitter: a
+    committers: b
+    maintainers: c
+    readyToMerge: d
+    communityReview: e
+`).toString('base64') }
+          };
+        },
+      },
+      rest: {
+        reactions: { createForIssueComment: async () => ({}) },
+        issues: { createComment: async () => ({}) },
+      },
+    },
+    repo: (params) => ({ owner: 'test', repo: 'test', ...params }),
+  });
+
+  assert.ok(
+    app.logLines.some(line => line.includes('Routed issue_comment to automation "assign"')),
+    'should route the event through normalize -> route -> dispatch'
+  );
 });

@@ -1,18 +1,54 @@
 // packages/probot-app/src/listener.js
 //
 // Probot webhook listener.
-// Registers all GitHub webhook event handlers and delegates to core policies.
-//
-// This module is adapter-specific — it bridges Probot's webhook delivery
-// with the shared core logic. The equivalent for GitHub Actions is
-// packages/github-action-adapter.
+// Registers all GitHub webhook event handlers and delegates to the shared
+// core pipeline: normalize -> route -> dispatch.
 
-const { runPRChecks } = require('@hiero-sdk-automations/core/src/policies/pr-checks/policy');
-const { runAssign } = require('@hiero-sdk-automations/core/src/policies/assign/policy');
+const {
+  normalizeEvent,
+  routeEvent,
+  dispatch,
+} = require('@hiero-sdk-automations/core');
 const { loadRepoConfig } = require('./config-loader');
 const { createLogger } = require('./audit-sink');
+const { createGitHubClient } = require('./github-client');
 
-const ASSIGN_COMMAND = /^\s*\/assign\s*$/i;
+function isBotUser(user) {
+  return user?.type === 'Bot';
+}
+
+function createEventHandler(app, eventName, preflight) {
+  return async (context) => {
+    const logger = createLogger(app.log);
+
+    if (preflight && preflight(context, app.log)) {
+      return;
+    }
+
+    const normalizedEvent = normalizeEvent(eventName, context.payload);
+    const automationKey = routeEvent(normalizedEvent);
+
+    if (!automationKey) {
+      app.log.info(`No automation route for ${eventName}`);
+      return;
+    }
+
+    app.log.info(`Routed ${eventName} to automation "${automationKey}"`);
+
+    try {
+      const config = await loadRepoConfig(context, logger, automationKey);
+      await dispatch({
+        automationKey,
+        github: createGitHubClient(context),
+        config,
+        event: normalizedEvent,
+        logger,
+      });
+    } catch (error) {
+      app.log.error(`Error handling ${eventName} (${automationKey}): ${error.message}`);
+    }
+  };
+}
 
 /**
  * Registers all Probot event handlers.
@@ -20,124 +56,30 @@ const ASSIGN_COMMAND = /^\s*\/assign\s*$/i;
  * @param {import('probot').Probot} app - The Probot application instance.
  */
 function registerListeners(app) {
-  // ───────────────────────────────────────────────────────────────
-  // /assign command handler
-  // ───────────────────────────────────────────────────────────────
-  app.on('issue_comment.created', async (context) => {
+  app.on('issue_comment.created', createEventHandler(app, 'issue_comment', (context) => {
     const { issue, comment } = context.payload;
+    if (issue.pull_request) return true;
+    if (isBotUser(comment.user)) return true;
+    return false;
+  }));
 
-    // Ignore PR comments
-    if (issue.pull_request) return;
-
-    // Ignore bot comments
-    if (comment.user.type === 'Bot') return;
-
-    // Only process /assign commands
-    if (!ASSIGN_COMMAND.test(comment.body)) return;
-
-    const logger = createLogger(app.log);
-    app.log.info(`Detected /assign command from: ${comment.user.login}`);
-
-    try {
-      const config = await loadRepoConfig(context, logger, 'assign');
-      const { owner, repo } = context.repo();
-
-      await runAssign({
-        github: context.octokit,
-        owner,
-        repo,
-        issue,
-        comment,
-        config,
-        logger,
-      });
-    } catch (error) {
-      app.log.error(`Error handling /assign: ${error.message}`);
-    }
-  });
-
-  // ───────────────────────────────────────────────────────────────
-  // PR Opened / Reopened handler
-  // ───────────────────────────────────────────────────────────────
-  app.on(['pull_request.opened', 'pull_request.reopened'], async (context) => {
+  app.on(['pull_request.opened', 'pull_request.reopened'], createEventHandler(app, 'pull_request', (context, log) => {
     const pr = context.payload.pull_request;
-    app.log.info(`PR Opened/Reopened: ${pr.html_url}`);
+    log.info(`PR Opened/Reopened: ${pr.html_url}`);
+    return isBotUser(pr.user);
+  }));
 
-    // Skip bot-authored PRs
-    if (pr.user.type === 'Bot') return;
-
-    const logger = createLogger(app.log);
-
-    try {
-      const config = await loadRepoConfig(context, logger, 'pr-checks');
-      const { owner, repo } = context.repo();
-      const prAuthor = pr.user.login;
-
-      // Auto-assign the PR author
-      const isAlreadyAssigned = (pr.assignees || []).some(
-        a => (a?.login || '').toLowerCase() === prAuthor.toLowerCase()
-      );
-      if (!isAlreadyAssigned) {
-        await context.octokit.issues.addAssignees(
-          context.repo({ issue_number: pr.number, assignees: [prAuthor] })
-        );
-        app.log.info(`Auto-assigned author ${prAuthor} to PR #${pr.number}`);
-      }
-
-      // Run PR checks with force=true (always set labels on open)
-      await runPRChecks({
-        github: context.octokit,
-        owner,
-        repo,
-        pullRequest: pr,
-        config,
-        force: true,
-        logger,
-      });
-
-      app.log.info(`PR open handler completed for PR #${pr.number}`);
-    } catch (error) {
-      app.log.error(`Error processing PR open: ${error.message}`);
-    }
-  });
-
-  // ───────────────────────────────────────────────────────────────
-  // PR Updated handler (new commits pushed, or body edited)
-  // ───────────────────────────────────────────────────────────────
-  app.on(['pull_request.synchronize', 'pull_request.edited'], async (context) => {
+  app.on(['pull_request.synchronize', 'pull_request.edited'], createEventHandler(app, 'pull_request', (context, log) => {
     const pr = context.payload.pull_request;
-    app.log.info(`PR Updated: ${pr.html_url}`);
+    log.info(`PR Updated: ${pr.html_url}`);
 
-    // Skip bot-authored PRs
-    if (pr.user.type === 'Bot') return;
-
-    // For edits, only re-check if the body changed (issue link may have changed)
+    if (isBotUser(pr.user)) return true;
     if (context.payload.action === 'edited' && !context.payload.changes?.body) {
-      return app.log.info('Body not changed, skipping PR edit check');
+      log.info('Body not changed, skipping PR edit check');
+      return true;
     }
-
-    const logger = createLogger(app.log);
-
-    try {
-      const config = await loadRepoConfig(context, logger, 'pr-checks');
-      const { owner, repo } = context.repo();
-
-      // Run PR checks with force=false (only swap labels if old label exists)
-      await runPRChecks({
-        github: context.octokit,
-        owner,
-        repo,
-        pullRequest: pr,
-        config,
-        force: false,
-        logger,
-      });
-
-      app.log.info(`PR update handler completed for PR #${pr.number}`);
-    } catch (error) {
-      app.log.error(`Error processing PR update: ${error.message}`);
-    }
-  });
+    return false;
+  }));
 }
 
-module.exports = { registerListeners };
+module.exports = { registerListeners, createEventHandler };

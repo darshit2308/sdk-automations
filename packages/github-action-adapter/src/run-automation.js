@@ -1,5 +1,5 @@
 const path = require('node:path');
-const { loadConfig, runAutomation } = require('../../core/src');
+const { loadConfig, normalizeEvent, dispatch } = require('../../core/src');
 
 function parseBooleanInput(value, defaultValue) {
   if (value === undefined || value === null || value === '') return defaultValue;
@@ -30,13 +30,15 @@ async function runWithDependencies(dependencies) {
     const inputs = readInputs(actionsCore);
     const github = actionsGithub.getOctokit(inputs.token);
     const config = loadConfig(path.resolve(cwd, inputs.configPath));
+    const event = normalizeEvent(actionsGithub.context.eventName, actionsGithub.context.payload);
 
-    await runAutomation(inputs.automation, {
+    await dispatch({
+      automationKey: inputs.automation,
       github,
       config,
       dryRun: inputs.dryRun,
       logger,
-      event: actionsGithub.context.payload,
+      event,
     });
   } catch (error) {
     actionsCore.setFailed(error.message || String(error));

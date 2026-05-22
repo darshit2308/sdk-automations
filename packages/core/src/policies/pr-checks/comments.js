@@ -1,4 +1,4 @@
-// packages/core/src/automations/pr-checks/comments.js
+// packages/core/src/policies/pr-checks/comments.js
 //
 // Pure functions for building the PR dashboard comment.
 // All policy values (URLs, team names) come from the config object.

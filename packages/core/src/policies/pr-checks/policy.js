@@ -241,12 +241,37 @@ async function swapStatusLabel(github, owner, repo, pullRequest, allPassed, forc
  * @param {object} params.logger - Logger with .info() and .error() methods.
  * @returns {{ allPassed: boolean }}
  */
-async function runPRChecks({ github, owner, repo, pullRequest, config, force = false, logger = console }) {
+async function runPRChecks({
+  github,
+  owner,
+  repo,
+  pullRequest,
+  config,
+  force = false,
+  autoAssignAuthor = false,
+  logger = console,
+}) {
   const pullNumber = pullRequest.number;
   const prAuthor = pullRequest.user.login;
 
   let dco, gpg, merge, issueLink;
   let commits = [];
+
+  if (autoAssignAuthor) {
+    const isAlreadyAssigned = (pullRequest.assignees || []).some(
+      assignee => (assignee?.login || '').toLowerCase() === prAuthor.toLowerCase()
+    );
+
+    if (!isAlreadyAssigned) {
+      await github.rest.issues.addAssignees({
+        owner,
+        repo,
+        issue_number: pullNumber,
+        assignees: [prAuthor],
+      });
+      logger.info(`Auto-assigned author ${prAuthor} to PR #${pullNumber}`);
+    }
+  }
 
   // Fetch commits
   try {

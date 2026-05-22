@@ -1,4 +1,4 @@
-// packages/core/src/automations/pr-checks/checks.js
+// packages/core/src/policies/pr-checks/checks.js
 //
 // Pure functions for PR quality checks.
 // These have NO GitHub API dependencies — they operate on data passed in.
