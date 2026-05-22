@@ -1,10 +1,32 @@
 # Caller Interface
 
-## Supported Actions
+There are two ways to consume Hiero SDK Automations: as a GitHub App (recommended) or via GitHub Actions.
+
+## 1. GitHub App (Recommended)
+
+The easiest way to consume the automations is by installing the **Hiero SDK Automations GitHub App** on your repository.
+
+Once installed, the App automatically listens to webhooks and applies policies based on your repository's configuration file. No workflow YAML is required.
+
+### Configuration
+
+The App looks for a configuration file in your repository's default branch. JSON and simple YAML are supported:
+
+- `.github/hiero-automation.json`
+- `.github/hiero-automation.yml`
+- `.github/hiero-automation.yaml`
+
+If no configuration file is found, the App will gracefully skip automations for that repository.
+
+---
+
+## 2. GitHub Actions (Compatibility)
+
+For repositories that cannot use the GitHub App, or for specific workflows that need to run locally, you can use the provided GitHub Actions.
 
 ### `actions/review-sync`
 
-Runs the review queue label sync pilot.
+Runs the review queue label sync automation.
 
 Inputs:
 
@@ -14,62 +36,59 @@ Inputs:
 
 ### `actions/run-automation`
 
-Generic dispatcher.
+Generic dispatcher for any automation.
 
 Inputs:
 
-- `automation` required: currently `review-sync`.
+- `automation` required: e.g., `assign`, `pr-checks`, `review-sync`.
 - `github-token` required.
 - `config-path` optional.
 - `dry-run` optional.
 
-## Config Path Behavior
+### Action Configuration
 
-The caller repository owns its automation policy file. JSON and simple YAML are supported:
+Like the GitHub App, the actions load the config file from the checked-out workspace. Caller workflows *must* include `actions/checkout` before running the automation action so the config file is present on disk.
 
-- `.github/hiero-automation.json`
-- `.github/hiero-automation.yml`
-- `.github/hiero-automation.yaml`
+### Examples
 
-The action loads this file from the checked-out workspace, validates the sections needed by the selected automation, and passes the resulting config to core logic.
-
-Caller workflows should include checkout when the action needs a local config file.
-
-## Python Example
-
-The recommended first pilot is dry-run review sync for Python. Scheduled runs stay dry-run until maintainers deliberately flip the workflow input/config.
+**Running Review Sync**
 
 ```yaml
+- name: Checkout
+  uses: actions/checkout@v4
+
 - name: Run shared review sync
   uses: hiero-hackers/sdk-automations/actions/review-sync@v0.1.0
   with:
     config-path: .github/hiero-automation.yml
     github-token: ${{ github.token }}
-    dry-run: ${{ inputs.dry_run || 'true' }}
+    dry-run: ${{ inputs.dry_run || 'false' }}
 ```
 
-## C++ Example
+**Running Assign Command via Issue Comment**
 
 ```yaml
-- name: Run shared automation
-  uses: hiero-hackers/sdk-automations/actions/run-automation@v0.1.0
-  with:
-    automation: assign
-    config-path: .github/hiero-automation.json
-    github-token: ${{ github.token }}
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  assign:
+    if: contains(github.event.comment.body, '/assign')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hiero-hackers/sdk-automations/actions/run-automation@v0.1.0
+        with:
+          automation: assign
+          github-token: ${{ github.token }}
 ```
-
-`assign` is shown as the intended future caller shape, not as an implemented automation in this first pilot.
-
-C++ contributor-facing bots should not be migrated until after the Python review-sync pilot and the shared assignment core design.
 
 ## Versioning
 
-Production callers should pin actions to a release tag or SHA:
+Production callers using GitHub Actions should pin to a release tag or SHA:
 
 - Release tag for normal adoption: `@v0.1.0`
 - Full commit SHA for maximum supply-chain stability
 
 Avoid floating `@main` in production SDK repositories.
-
-Before creating a release tag, run `npm run build` and commit the generated `actions/*/dist/index.js` bundles so callers do not need to install dependencies.

@@ -1,4 +1,4 @@
-// packages/core/src/automations/pr-checks/index.js
+// packages/core/src/policies/pr-checks/policy.js
 //
 // Orchestrator for PR quality checks.
 // Receives a plain Octokit instance — works with both GitHub Actions and Probot.

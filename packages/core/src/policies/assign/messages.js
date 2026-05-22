@@ -87,6 +87,25 @@ function buildPrerequisiteNotMetComment(requesterUsername, skillLevel, completed
   ].join('\n');
 }
 
+/**
+ * Builds a comment for when the requester has exceeded the Good First Issue
+ * completion cap and should graduate to higher-level issues.
+ */
+function buildGfiCapExceededComment(requesterUsername, completedCount, maxCompletions, config) {
+  const skillHierarchy = config.skillHierarchy || [];
+  const nextLevel = skillHierarchy.length > 1 ? skillHierarchy[1] : 'beginner';
+  const prereqs = config.skillPrerequisites || {};
+  const nextDisplayName = prereqs[nextLevel]?.displayName || 'Beginner';
+
+  return [
+    `👋 Hi @${requesterUsername}! Great news — you've already completed **${completedCount} Good First Issues**! 🎉`,
+    '',
+    `Our cap is **${maxCompletions}** Good First Issues per contributor, so you've graduated!`,
+    '',
+    `You're ready to take on **${nextDisplayName}** issues now. Look for issues labeled \`${nextLevel}\` and comment \`/assign\` to get started! 🚀`,
+  ].join('\n');
+}
+
 module.exports = {
   buildWelcomeComment,
   buildAlreadyAssignedComment,
@@ -94,4 +113,5 @@ module.exports = {
   buildNoSkillLevelComment,
   buildAssignmentLimitExceededComment,
   buildPrerequisiteNotMetComment,
+  buildGfiCapExceededComment,
 };

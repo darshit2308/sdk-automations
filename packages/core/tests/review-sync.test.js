@@ -5,7 +5,7 @@ const {
   buildReviewQueueLabels,
   determineLabel,
   runReviewSync,
-} = require('../src/automations/review-sync');
+} = require('../src/policies/review-sync/policy');
 const { createConfig, createMockGithub, createLogger } = require('./test-utils');
 
 test('determineLabel maps approval states to review queue labels', () => {

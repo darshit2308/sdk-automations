@@ -1,3 +1,8 @@
+// packages/core/src/policies/review-sync/policy.js
+//
+// Orchestrator for the review-sync automation.
+// Syncs review queue labels for open pull requests based on approval states.
+
 const { validateConfig } = require('../../config/validate-config');
 const { buildReviewQueueLabels, ensureLabel, syncLabel } = require('./labels');
 

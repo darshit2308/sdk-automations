@@ -2,50 +2,58 @@
 
 ## Why This Repo Exists
 
-Hiero SDK repositories currently duplicate GitHub automation logic in local workflow YAML and scripts. This repository centralizes reusable automation behavior while preserving each SDK repository's local workflow control.
+Hiero SDK repositories previously duplicated GitHub automation logic in local workflow YAML and scripts. This repository centralizes reusable automation behavior while providing multiple ways for repositories to consume it.
 
-The goal is to share logic, not to erase every workflow file from SDK repositories.
+The goal is to share logic, enforce consistent policies across SDKs, and provide a single place to update automations.
 
-## Local Workflow Boundaries
+## Centralized GitHub App (Primary)
 
-SDK repositories should keep these concerns local:
+The primary delivery mechanism is the **Hiero SDK Automations GitHub App** (built with Probot).
 
-- event triggers
-- permissions
-- concurrency
-- `if:` guards
-- runner selection
-- checkout ref and sparse checkout details
-- `step-security/harden-runner`
-- multi-job orchestration and artifacts
+- Listens to webhooks in real-time
+- Uses fine-grained, scoped installation tokens
+- Requires no local workflow YAML in target repositories
+- Standardizes events across all installed SDK repos
 
-Those details are meaningful per repository and per event. Hiding them behind a full reusable workflow would make the caller interface harder to reason about and would repeat the wrapper problems already found in C++.
+## GitHub Action Adapters (Compatibility)
+
+For repositories that have not yet migrated, or for specific policies that still need to run in the context of a local GitHub Actions workflow (e.g. relying on local repository secrets or specific runner environments), this repo also exports GitHub Actions (`actions/run-automation` and `actions/review-sync`).
 
 ## Shared Core
 
-Reusable behavior lives in `packages/core`. Core modules receive explicit inputs:
+Reusable behavior lives in `packages/core`. The core architecture follows a strict, one-way data flow pipeline:
 
-- repository owner/name
-- configuration values
-- an Octokit-like GitHub client
-- event payload or normalized context
-- logger
-- dry-run controls
+```
+GitHub webhook
+  → listener           adapter-specific (Probot or Actions)
+  → normalizer         packages/core/src/events/normalize.js
+  → router             packages/core/src/routing/route-event.js
+  → dispatcher         packages/core/src/dispatcher/dispatch.js
+  → policy module      packages/core/src/policies/{name}/policy.js
+  → operation plan     packages/core/src/operations/operation-plan.js
+  → executor           packages/core/src/operations/executor.js
+  → GitHub API write   adapter-specific GitHub client
+```
 
-Core modules do not depend on GitHub Actions globals, environment variables, or `@actions/*` packages. This makes the logic unit-testable and reusable by future adapters.
+### 1. Listener (Adapter)
+The adapter (`packages/probot-app` or `packages/github-action-adapter`) listens for GitHub events. It loads the configuration for the specific repository and passes the raw payload to the core.
 
-## GitHub Action Adapters
+### 2. Normalizer
+`events/normalize.js` takes raw GitHub webhook payloads (which vary wildly) and normalizes them into a consistent internal `NormalizedEvent` structure.
 
-`packages/github-action-adapter` is the GitHub Actions boundary. It reads action inputs, creates the GitHub client, loads configuration, and calls `packages/core`.
+### 3. Router
+`routing/route-event.js` maps a normalized event (e.g. `issue_comment.created` + `/assign`) to a specific automation key (e.g. `assign`).
 
-The first action path is `review-sync`. `actions/run-automation` is a generic dispatch entrypoint, while `actions/review-sync` is a convenience entrypoint for the pilot.
+### 4. Dispatcher
+`dispatcher/dispatch.js` routes the automation key to the correct policy module and passes along the necessary context (config, GitHub client, event details).
 
-## Actions First, Probot Later
+### 5. Policies
+Business logic lives in `packages/core/src/policies/`. Policies are pure decision engines. They evaluate the event, check prerequisites, and determine what actions *should* happen. They produce an `OperationPlan`.
 
-A Probot/GitHub App can later reuse `packages/core` by providing a different adapter for authentication, event context, logging, and config loading.
+### 6. Operations & Executor
+An `OperationPlan` is a pure data structure describing intended side effects (add label, assign user, post comment). The executor (`operations/executor.js`) carries out these plans using the injected GitHub client.
 
-Starting with JavaScript actions keeps migration small:
-
-- SDK repositories can update one workflow step at a time.
-- Existing triggers and security posture remain visible.
-- Maintainers can review the central interface before production C++ workflow changes.
+This separation enables:
+- **Testability:** Policies can be unit tested without mocking the GitHub API.
+- **Dry-run mode:** The executor can log operations instead of applying them.
+- **Auditing:** We can easily log all intended actions before they happen.

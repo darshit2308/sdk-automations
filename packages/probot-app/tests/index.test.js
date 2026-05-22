@@ -201,3 +201,100 @@ test('pull_request.edited handler skips non-body edits', async () => {
     'should log that body was not changed'
   );
 });
+
+// ─── Deep Integration tests ────────────────────────────────────────
+
+const { parseConfig } = require('@hiero-sdk-automations/core');
+
+test('issue_comment handler fails closed when config is missing', async () => {
+  const app = createMockApp();
+  registerProbotApp(app);
+
+  const handler = app.handlers['issue_comment.created'][0];
+
+  await handler({
+    payload: {
+      issue: { number: 1, labels: [], assignees: [] },
+      comment: { id: 100, body: '/assign', user: { login: 'alice', type: 'User' } },
+      repository: { owner: { login: 'test' }, name: 'test' },
+    },
+    octokit: {
+      repos: {
+        // Mock GitHub API returning 404 for all config paths
+        getContent: async () => {
+          const err = new Error('Not found');
+          err.status = 404;
+          throw err;
+        },
+      },
+    },
+    repo: (params) => ({ owner: 'test', repo: 'test', ...params }),
+  });
+
+  assert.ok(
+    app.logLines.some(l => l.includes('ERROR: Error handling /assign: No hiero-automation config file found')),
+    'should fail closed and log the missing config error'
+  );
+});
+
+test('issue_comment handler loads valid config and delegates to runAssign', async () => {
+  const app = createMockApp();
+  registerProbotApp(app);
+
+  const validYaml = `
+repository:
+  owner: test
+  name: test
+labels:
+  reviewQueue:
+    juniorCommitter: a
+    committers: b
+    maintainers: c
+    readyToMerge: d
+    communityReview: e
+`;
+
+  const handler = app.handlers['issue_comment.created'][0];
+
+  // We spy on the github.rest methods to verify runAssign was called
+  let commentCreated = false;
+
+  await handler({
+    payload: {
+      issue: { number: 1, labels: [], assignees: [{ login: 'alice' }] }, // Already assigned -> runAssign will post a comment
+      comment: { id: 100, body: '/assign', user: { login: 'alice', type: 'User' } },
+      repository: { owner: { login: 'test' }, name: 'test' },
+    },
+    octokit: {
+      repos: {
+        getContent: async ({ path }) => {
+          if (path.endsWith('.json')) {
+            const err = new Error('Not found');
+            err.status = 404;
+            throw err;
+          }
+          return {
+            data: { content: Buffer.from(validYaml).toString('base64') }
+          };
+        },
+      },
+      rest: {
+        reactions: {
+          createForIssueComment: async () => ({}),
+        },
+        issues: {
+          createComment: async () => { commentCreated = true; return {}; },
+        },
+      },
+    },
+    repo: (params) => ({ owner: 'test', repo: 'test', ...params }),
+  });
+
+  assert.ok(
+    app.logLines.some(l => l.includes('Successfully loaded and validated config')),
+    'should log successful config load'
+  );
+
+
+  assert.equal(commentCreated, true, 'runAssign should have been executed and created a comment');
+});

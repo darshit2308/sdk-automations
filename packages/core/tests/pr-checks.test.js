@@ -8,13 +8,13 @@ const {
   checkDCO,
   checkGPG,
   parseIssueNumbers,
-} = require('../src/automations/pr-checks/checks');
+} = require('../src/policies/pr-checks/checks');
 
 const {
   allChecksPassed,
   buildBotComment,
   MARKER,
-} = require('../src/automations/pr-checks/comments');
+} = require('../src/policies/pr-checks/comments');
 
 // ─── Test helpers ────────────────────────────────────────────────
 

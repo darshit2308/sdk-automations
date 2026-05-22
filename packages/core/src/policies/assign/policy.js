@@ -1,4 +1,4 @@
-// packages/core/src/automations/assign/index.js
+// packages/core/src/policies/assign/policy.js
 //
 // Orchestrator for the /assign command.
 // Implements the full decision tree: already assigned? ready for dev?
@@ -11,6 +11,7 @@ const {
   buildNoSkillLevelComment,
   buildAssignmentLimitExceededComment,
   buildPrerequisiteNotMetComment,
+  buildGfiCapExceededComment,
 } = require('./messages');
 
 /**
@@ -80,7 +81,23 @@ async function runAssign({ github, owner, repo, issue, comment, config, logger =
     return { assigned: false, reason: 'limit_exceeded' };
   }
 
-  // 5. Check skill prerequisites
+  // 5. Check Good First Issue graduation cap
+  const goodFirstIssueLabel = skillHierarchy[0] || '';
+  const maxGfiCompletions = config.assignment?.maxGoodFirstIssueCompletions;
+  if (issueSkillLevel === goodFirstIssueLabel && typeof maxGfiCompletions === 'number' && maxGfiCompletions > 0) {
+    const gfiSearchQuery = `repo:${owner}/${repo} is:issue is:closed assignee:${requester} label:"${goodFirstIssueLabel}"`;
+    const gfiSearch = await github.rest.search.issuesAndPullRequests({ q: gfiSearchQuery });
+    const gfiCompletedCount = gfiSearch.data.total_count;
+
+    if (gfiCompletedCount >= maxGfiCompletions) {
+      const msg = buildGfiCapExceededComment(requester, gfiCompletedCount, maxGfiCompletions, config);
+      await github.rest.issues.createComment({ owner, repo, issue_number: issueNumber, body: msg });
+      logger.info(`User ${requester} exceeded GFI cap (${gfiCompletedCount}/${maxGfiCompletions})`);
+      return { assigned: false, reason: 'gfi_cap_exceeded' };
+    }
+  }
+
+  // 6. Check skill prerequisites
   const prereqs = config.skillPrerequisites || {};
   const prereq = prereqs[issueSkillLevel];
 

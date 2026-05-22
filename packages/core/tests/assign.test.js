@@ -8,9 +8,10 @@ const {
   buildNoSkillLevelComment,
   buildAssignmentLimitExceededComment,
   buildPrerequisiteNotMetComment,
-} = require('../src/automations/assign/messages');
+  buildGfiCapExceededComment,
+} = require('../src/policies/assign/messages');
 
-const { runAssign } = require('../src/automations/assign');
+const { runAssign } = require('../src/policies/assign/policy');
 
 // ─── Test helpers ────────────────────────────────────────────────
 
@@ -202,6 +203,14 @@ test('buildPrerequisiteNotMetComment uses config prereqs', () => {
   assert.ok(msg.includes('1'));
 });
 
+test('buildGfiCapExceededComment uses config hierarchy', () => {
+  const config = createConfig();
+  const msg = buildGfiCapExceededComment('alice', 5, 5, config);
+  assert.ok(msg.includes('5 Good First Issues'));
+  assert.ok(msg.includes('graduated'));
+  assert.ok(msg.includes('Beginner'));
+});
+
 // ─── runAssign integration tests ─────────────────────────────────
 
 test('runAssign rejects when issue is already assigned', async () => {
@@ -292,6 +301,32 @@ test('runAssign rejects when assignment limit exceeded', async () => {
 
   assert.equal(result.assigned, false);
   assert.equal(result.reason, 'limit_exceeded');
+});
+
+test('runAssign rejects when GFI cap is exceeded', async () => {
+  // 5 closed GFIs
+  const github = createMockGithub({ openAssignments: 0, closedPrereqs: 5 });
+  const config = createConfig({
+    assignment: { enabled: true, maxOpenAssignments: 2, maxGoodFirstIssueCompletions: 5 }
+  });
+
+  const result = await runAssign({
+    github,
+    owner: 'hiero-ledger',
+    repo: 'hiero-sdk-test',
+    issue: {
+      number: 1,
+      labels: [{ name: 'status: ready for dev' }, { name: 'skill: good first issue' }],
+      assignees: [],
+    },
+    comment: { id: 100, user: { login: 'alice' } },
+    config,
+    logger: createLogger(),
+  });
+
+  assert.equal(result.assigned, false);
+  assert.equal(result.reason, 'gfi_cap_exceeded');
+  assert.ok(github.calls.comments[0].body.includes('graduated'));
 });
 
 test('runAssign rejects when prerequisite not met', async () => {
